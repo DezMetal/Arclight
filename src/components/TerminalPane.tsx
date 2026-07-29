@@ -8,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { pty, errorText, type ShellOption } from "../lib/api";
 import { readTerminalTheme } from "../lib/terminalTheme";
-import { runCustomCommand, matchCustomCommand } from "../lib/customCommands";
+import { runCustomCommand, matchCustomCommand, COMMAND_PREFIX } from "../lib/customCommands";
 
 /**
  * The terminal is a view onto a session that lives in the Rust backend.
@@ -83,18 +83,26 @@ export const TerminalPane: React.FC<{
     try {
       fit.fit();
     } catch {
-      /* container not laid out yet; the ResizeObserver will catch it */
+      /* container not laid out yet; sizes are clamped below */
     }
 
     const decoder = new TextDecoder("utf-8", { fatal: false });
+
+    // A pane created by a split has not been laid out when this runs, so
+    // fit() reports 0 columns. Handing ConPTY a zero-size window leaves the
+    // shell started but never drawing — which looked like "the terminal never
+    // starts". Clamp to a usable size; the ResizeObserver corrects it as soon
+    // as the split has real dimensions.
+    const cols = Math.max(term.cols || 0, 20);
+    const rows = Math.max(term.rows || 0, 5);
 
     pty
       .spawn(
         {
           id: sessionId,
           cwd: state.terminalCwd || undefined,
-          cols: term.cols,
-          rows: term.rows,
+          cols,
+          rows,
           shell,
         },
         (bytes) => {
@@ -105,6 +113,15 @@ export const TerminalPane: React.FC<{
         if (disposed) return;
         setAlive(true);
         setCwd(info.cwd);
+        // Re-fit once the browser has laid the pane out for real.
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          try {
+            fit.fit();
+          } catch {
+            /* still not laid out */
+          }
+        });
       })
       .catch((err) => {
         if (disposed) return;
@@ -112,39 +129,143 @@ export const TerminalPane: React.FC<{
         setAlive(false);
       });
 
-    // Keystrokes. Custom commands are intercepted here, on the input side,
-    // before bytes ever reach the shell — the old approach scanned the shell's
-    // *output* for a sentinel string, which misfired whenever a chunk boundary
-    // split the marker or a file containing it was printed.
-    let lineBuffer = "";
+    // Keystrokes.
+    //
+    // A `dnet` line must never reach the shell, or cmd answers with "'dnet' is
+    // not recognized". Since we cannot know what a line is until enough of it
+    // is typed, input at the start of a line is *held* while it could still
+    // become `dnet`, echoed locally so typing feels immediate. The moment it
+    // cannot be, the held characters are flushed to the shell and we go back to
+    // pass-through for the rest of the line.
+    //
+    // Worst case is four held characters, and only at a line start.
+    type Phase = "holding" | "passthrough" | "command";
+    let phase: Phase = "holding";
+    let held = "";
+    let line = "";
+
+    const send = (data: string) => {
+      void pty.write(sessionId, data).catch(() => setAlive(false));
+    };
+
+    /** Give up on `dnet`: erase the local echo and hand the shell everything. */
+    const flushHeld = (andThen: string) => {
+      if (held) term.write("\b \b".repeat(held.length));
+      const payload = held + andThen;
+      held = "";
+      phase = "passthrough";
+      if (payload) send(payload);
+    };
+
+    const execute = () => {
+      const matched = matchCustomCommand(line);
+      line = "";
+      held = "";
+      phase = "holding";
+      if (!matched) return;
+
+      term.write("\r\n");
+      void runCustomCommand(matched, {
+        cwd: cwdRef.current,
+        paneId,
+        sessionId,
+        workspace: workspaceRef.current,
+        print: (text) => term.write(text.replace(/\r?\n/g, "\r\n")),
+      }).finally(() => {
+        // The shell never saw the command, so nudge it to redraw its prompt.
+        send("\r");
+      });
+    };
+
     const dataSub = term.onData((data) => {
-      if (data === "\r") {
-        const command = matchCustomCommand(lineBuffer);
-        if (command) {
-          lineBuffer = "";
-          term.write("\r\n");
-          void runCustomCommand(command, {
-            cwd: cwdRef.current,
-            paneId,
-            sessionId,
-            workspace: workspaceRef.current,
-            print: (text) => term.write(text.replace(/\r?\n/g, "\r\n")),
-          }).finally(() => {
-            // Redraw the shell's prompt so the line the user is on stays real.
-            void pty.write(sessionId, "\r");
-          });
+      // Escape sequences and pastes are never dnet commands.
+      if (data.startsWith("\x1b") || data.length > 1) {
+        if (phase === "command") {
+          if (data.startsWith("\x1b")) return; // ignore arrows mid-command
+          line += data;
+          term.write(data);
           return;
         }
-        lineBuffer = "";
-      } else if (data === "\x7f") {
-        lineBuffer = lineBuffer.slice(0, -1);
-      } else if (data === "\x03" || data === "\x1b") {
-        lineBuffer = "";
-      } else if (data >= " ") {
-        lineBuffer += data;
+        flushHeld(data);
+        return;
       }
 
-      void pty.write(sessionId, data).catch(() => setAlive(false));
+      if (phase === "command") {
+        if (data === "\r") {
+          execute();
+        } else if (data === "\x7f") {
+          if (line.length > 0) {
+            line = line.slice(0, -1);
+            term.write("\b \b");
+          }
+          if (line.length === 0) phase = "holding";
+        } else if (data === "\x03") {
+          term.write("^C\r\n");
+          line = "";
+          held = "";
+          phase = "holding";
+          send("\r");
+        } else if (data >= " ") {
+          line += data;
+          term.write(data);
+        }
+        return;
+      }
+
+      if (phase === "passthrough") {
+        if (data === "\r") phase = "holding";
+        send(data);
+        return;
+      }
+
+      // phase === "holding"
+      if (data === "\r") {
+        if (held === COMMAND_PREFIX) {
+          line = held;
+          execute();
+        } else {
+          flushHeld("\r");
+          phase = "holding";
+        }
+        return;
+      }
+
+      if (data === "\x7f") {
+        if (held.length > 0) {
+          held = held.slice(0, -1);
+          term.write("\b \b");
+        } else {
+          send(data);
+        }
+        return;
+      }
+
+      if (data === "\x03") {
+        if (held) term.write("\b \b".repeat(held.length));
+        held = "";
+        send(data);
+        return;
+      }
+
+      if (data < " ") {
+        flushHeld(data);
+        return;
+      }
+
+      const candidate = held + data;
+      if (candidate === `${COMMAND_PREFIX} ` || candidate.startsWith(`${COMMAND_PREFIX} `)) {
+        // Confirmed ours for the rest of this line.
+        phase = "command";
+        line = candidate;
+        held = "";
+        term.write(data);
+      } else if (COMMAND_PREFIX.startsWith(candidate)) {
+        // Still could be `dnet` — hold and echo.
+        held = candidate;
+        term.write(data);
+      } else {
+        flushHeld(data);
+      }
     });
 
     const resizeSub = term.onResize(({ cols, rows }) => {

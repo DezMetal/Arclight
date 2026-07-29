@@ -37,13 +37,9 @@ interface WorkspaceContextProps {
   resetLayout: () => void;
   settings: WorkspaceSettings;
   updateSettings: (newSettings: Partial<WorkspaceSettings>) => void;
-  panesRegistry: {
-    id: string;
-    pluginType: string;
-    isActive: boolean;
-    state: any;
-    historyCount: number;
-  }[];
+  panesRegistry: PaneSummary[];
+  /** Read any pane's stored context for a tool, without mounting it. */
+  getPaneContext: (paneId: string, pluginType?: string) => any;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(undefined);
@@ -92,6 +88,57 @@ const DEFAULT_SETTINGS: WorkspaceSettings = {
 const SETTINGS_KEY = "arclight_settings";
 const LAYOUT_KEY = "arclight_layout";
 
+export interface PaneSummary {
+  id: string;
+  pluginType: string;
+  isActive: boolean;
+  /** The active tool's context. */
+  state: any;
+  /** Every tool context this pane remembers, keyed by plugin type. */
+  contexts: Record<string, any>;
+  historyCount: number;
+}
+
+/** Read the context a leaf holds for the tool it is currently showing. */
+export function leafContext(leaf: PaneLeaf): any {
+  return (leaf.contexts || {})[leaf.pluginType] || {};
+}
+
+/**
+ * Bring a persisted layout up to the current shape.
+ *
+ * Layouts saved before panes had per-tool contexts carry a single `state`
+ * object plus history entries that embedded their own state. Both are folded
+ * into `contexts` so an existing saved workspace keeps working.
+ */
+function migrateLayout(node: LayoutNode | null): LayoutNode | null {
+  if (!node) return null;
+  if (node.type === "split") {
+    return { ...node, left: migrateLayout(node.left)!, right: migrateLayout(node.right)! };
+  }
+
+  if (node.contexts) {
+    return node;
+  }
+
+  const contexts: Record<string, any> = {};
+  if (node.state && Object.keys(node.state).length > 0) {
+    contexts[node.pluginType] = node.state;
+  }
+  for (const entry of (node.history || []) as { pluginType: string; state?: any }[]) {
+    if (entry.state && !contexts[entry.pluginType]) {
+      contexts[entry.pluginType] = entry.state;
+    }
+  }
+
+  const { state: _dropped, ...rest } = node;
+  return {
+    ...rest,
+    contexts,
+    history: (node.history || []).map((h) => ({ pluginType: h.pluginType })),
+  };
+}
+
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<WorkspaceSettings>(() => {
     try {
@@ -110,7 +157,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!remember) return DEFAULT_LAYOUT;
 
       const saved = localStorage.getItem(LAYOUT_KEY);
-      return saved ? JSON.parse(saved) : DEFAULT_LAYOUT;
+      return saved ? migrateLayout(JSON.parse(saved)) : DEFAULT_LAYOUT;
     } catch {
       return DEFAULT_LAYOUT;
     }
@@ -119,13 +166,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [lastActiveEditorId, setLastActiveEditorId] = useState<string | null>(null);
   const [plugins, setPlugins] = useState<Record<string, PluginDefinition>>({});
-  const [panesRegistry, setPanesRegistry] = useState<{
-    id: string;
-    pluginType: string;
-    isActive: boolean;
-    state: any;
-    historyCount: number;
-  }[]>([]);
+  const [panesRegistry, setPanesRegistry] = useState<PaneSummary[]>([]);
   
   const eventListeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
 
@@ -141,7 +182,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       id: leaf.id,
       pluginType: leaf.pluginType,
       isActive: leaf.id === activePaneId,
-      state: leaf.state || {},
+      state: (leaf.contexts || {})[leaf.pluginType] || {},
+      contexts: leaf.contexts || {},
       historyCount: leaf.history ? leaf.history.length : 0,
     }));
     setPanesRegistry(registry);
@@ -220,15 +262,19 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             type: "leaf",
             id: node.id,
             pluginType: node.pluginType,
-            state: deepClone(node.state),
-            history: deepClone(node.history),
+            contexts: deepClone(node.contexts) || {},
+            history: deepClone(node.history) || [],
           };
+          // The new pane seeds only the tool it is being opened as. Inheriting
+          // the source pane's whole state handed a terminal the editor's
+          // filePath and vice versa. History belongs to the original pane.
+          const seeded = initialState ? deepClone(initialState) : {};
           const rightLeaf: PaneLeaf = {
             type: "leaf",
             id: `pane_${randId}`,
             pluginType: newPluginType,
-            state: initialState ? deepClone(initialState) : deepClone(node.state),
-            history: deepClone(node.history),
+            contexts: { [newPluginType]: seeded },
+            history: [],
           };
           return {
             type: "split",
@@ -270,12 +316,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const history = node.history || [];
           if (history.length > 0) {
             const last = history[history.length - 1];
-            const remaining = history.slice(0, -1);
             return {
               ...node,
               pluginType: last.pluginType,
-              state: last.state || {},
-              history: remaining,
+              history: history.slice(0, -1),
             };
           }
           return null; // Marks for removal
@@ -306,7 +350,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const updateLeafPlugin = (node: LayoutNode): LayoutNode => {
       if (node.type === "leaf") {
         if (node.id === paneId) {
-          return { ...node, pluginType, state: {} };
+          // Contexts are preserved. Switching explorer -> terminal -> explorer
+          // returns the explorer to the directory it was showing.
+          return { ...node, pluginType };
         }
         return node;
       }
@@ -326,12 +372,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const updateLeafState = (node: LayoutNode): LayoutNode => {
       if (node.type === "leaf") {
         if (node.id === paneId) {
-          const currentState = node.state || {};
-          const isSame = Object.keys(state).every(
-            (k) => currentState[k] === state[k]
-          );
+          const contexts = node.contexts || {};
+          const current = contexts[node.pluginType] || {};
+          const isSame = Object.keys(state).every((k) => current[k] === state[k]);
           if (isSame) return node;
-          return { ...node, state: { ...currentState, ...state } };
+          return {
+            ...node,
+            contexts: {
+              ...contexts,
+              [node.pluginType]: { ...current, ...state },
+            },
+          };
         }
         return node;
       }
@@ -389,7 +440,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           type: "leaf",
           id: "pane_editor_init",
           pluginType: "editor",
-          state: { filePath: payload.path },
+          contexts: { editor: { filePath: payload.path } },
         });
         setActivePaneId("pane_editor_init");
         setLastActiveEditorId("pane_editor_init");
@@ -411,11 +462,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             if (node.type === "leaf") {
               if (node.id === paneId) {
                 const currentHistory = node.history || [];
-                const updatedHistory = [...currentHistory, { pluginType: node.pluginType, state: node.state || {} }];
+                const updatedHistory = [...currentHistory, { pluginType: node.pluginType }];
                 return {
                   ...node,
                   pluginType: "editor",
-                  state: { filePath },
+                  contexts: {
+                    ...(node.contexts || {}),
+                    editor: { ...((node.contexts || {}).editor || {}), filePath },
+                  },
                   history: updatedHistory,
                 };
               }
@@ -514,6 +568,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return unsubscribe;
   }, [layoutTree, activePaneId, lastActiveEditorId, subscribeEvent, setPanePlugin, splitPane, setPaneState]);
 
+  const getPaneContext = useCallback(
+    (paneId: string, pluginType?: string) => {
+      const pane = panesRegistry.find((p) => p.id === paneId);
+      if (!pane) return undefined;
+      return pluginType ? pane.contexts[pluginType] : pane.state;
+    },
+    [panesRegistry],
+  );
+
   return (
     <WorkspaceContext.Provider
       value={{
@@ -536,6 +599,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         settings,
         updateSettings,
         panesRegistry,
+        getPaneContext,
       }}
     >
       {children}

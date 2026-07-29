@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Columns, Layers, Maximize2, Minimize2, Rows, X } from "lucide-react";
 
 import { LayoutNode, PaneLeaf, PaneParent, PluginDefinition } from "../types";
-import { useWorkspace } from "../context/WorkspaceContext";
+import { useWorkspace, leafContext } from "../context/WorkspaceContext";
 
 function findLeafNode(node: LayoutNode, id: string): PaneLeaf | null {
   if (node.type === "leaf") return node.id === id ? node : null;
@@ -345,7 +345,14 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
         {/* Tool */}
         <div className="flex-1 min-h-0 overflow-hidden relative">
           {plugin ? (
-            <plugin.component paneId={node.id} state={node.state ?? {}} updateState={updateState} />
+            // Keyed by tool so switching tools remounts cleanly while each
+            // tool's context survives in the pane.
+            <plugin.component
+              key={node.pluginType}
+              paneId={node.id}
+              state={leafContext(node)}
+              updateState={updateState}
+            />
           ) : (
             <div
               className="h-full flex items-center justify-center text-[11px]"
