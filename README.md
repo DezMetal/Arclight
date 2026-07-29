@@ -1,30 +1,26 @@
-# Dev Workspace
+<div align="center">
 
-A tiled workspace that aims to replace your file explorer, editor, terminal and IDE
-with one lightweight program.
+# Arclight
 
-> **Status: pre-alpha, under active rebuild.** The current tree is a browser app
-> served by a local Node server. It is being ported to a Tauri desktop shell with a
-> real PTY. Do not rely on it for daily work yet — see [Known limitations](#known-limitations).
+**A tiled explorer, editor and terminal in one window.**
+From D-Net Lab.
 
-## Concept
+</div>
 
-The workspace is a tree of **panes**. Any pane can host any **tool**, and any pane can
-be split horizontally or vertically. Tools currently registered:
+---
 
-| Tool | Type id | What it does |
-| --- | --- | --- |
-| File Explorer | `file-explorer` | Browse the real filesystem, create/rename/delete, open externally |
-| Code Editor | `editor` | Edit files, autosave, find-in-file |
-| Terminal | `terminal` | Shell session on the host OS |
-| Settings | `settings` | Theme, font size, workspace preferences |
+Arclight is a native desktop workspace built to replace your file explorer, your
+editor and your terminal with a single lightweight program. It is a Tauri
+application: a Rust backend with a React frontend, shipping as one small `.exe`
+with no server, no port, and nothing listening on the network.
 
-Layout and settings persist to `localStorage` under `dev_workspace_layout` and
-`dev_workspace_settings`.
+**Primary platform is Windows.** macOS and Linux paths exist and compile, but
+Windows is what gets used and tested.
 
 ## Running it
 
-**Prerequisites:** Node.js 22+
+**Prerequisites:** Node.js 22+, Rust 1.77+, and on Windows the MSVC build tools
+plus the WebView2 runtime (present by default on Windows 11).
 
 ```bash
 npm install
@@ -34,65 +30,140 @@ npm install
 npm run dev
 ```
 
-Then open <http://localhost:3000>.
+That launches the app with hot reload. To produce a distributable installer:
 
-Other scripts:
+```bash
+npm run build
+```
 
 | Script | Purpose |
 | --- | --- |
-| `npm run dev` | Vite in middleware mode behind the Express API server |
-| `npm run build` | Bundle frontend to `dist/` and server to `dist/server.cjs` |
-| `npm start` | Run the production bundle |
-| `npm run lint` | Typecheck with `tsc --noEmit` |
-| `npm run clean` | Remove `dist/` |
+| `npm run dev` | Launch with hot reload |
+| `npm run build` | Build the NSIS installer into `src-tauri/target/release/bundle` |
+| `npm run lint` | Typecheck the frontend |
+| `npm run test:rust` | Run the Rust unit tests |
+| `npm run icons` | Regenerate the icon set from `tools/generate_icons.py` |
 
-## Architecture (current)
+## The workspace model
+
+The window is a tree of **panes**. Any pane can host any **tool**, and any pane
+can split horizontally or vertically without limit.
+
+| Tool | What it does |
+| --- | --- |
+| **Explorer** | Browse the real filesystem — drives, breadcrumbs, filter, create, rename, delete, cut/copy/paste, reveal in Windows Explorer |
+| **Editor** | CodeMirror 6 — syntax highlighting for ~100 languages, multi-cursor, folding, search, autosave |
+| **Terminal** | A real shell, via ConPTY |
+| **Settings** | Theme, font size, tab size, autosave, layout |
+
+Pane headers carry the tool selector, split controls, maximize and close. The
+focused pane is the one with the accent glow around it. Layout and settings
+persist to `localStorage` under `arclight_layout` and `arclight_settings`.
+
+## The terminal
+
+This is a genuine PTY, not a pipe with a line editor bolted on. ConPTY on
+Windows via `portable-pty`, which means tab completion, arrow keys, readline,
+and every interactive program works: Python REPL, `ssh`, `vim`, `git commit`,
+progress bars, password prompts.
+
+**Sessions live in the Rust backend, not in the UI.** A pane can unmount, the
+webview can hot-reload, the layout can be rearranged, the font size can change —
+the shell keeps running and keeps buffering output. Reattaching replays
+scrollback so the pane looks exactly as it did. Killing a shell is something you
+do deliberately, with the restart button.
+
+`cmd.exe` is the default. PowerShell, PowerShell 7 and Git Bash are offered in
+the pane header when they are installed.
+
+Working directory is reported by the shell itself through OSC 9;9 (Windows) or
+OSC 7 (POSIX), parsed out of the PTY stream with a scanner that handles
+sequences split across read boundaries.
+
+## The `dnet` command suite
+
+Type `dnet <command>` in any terminal pane to drive the workspace. These are
+matched on the input line before a byte reaches the shell.
+
+| Command | Does |
+| --- | --- |
+| `dnet help` | List every command |
+| `dnet edit <file> [-h\|-v]` | Open a file in a new editor split |
+| `dnet open <file>` | Open a file in the active editor |
+| `dnet term [-h\|-v]` | New terminal split at this directory |
+| `dnet explore [-h\|-v]` | New explorer split at this directory |
+| `dnet reveal [path]` | Show in Windows Explorer |
+| `dnet theme <dnet\|arc\|light>` | Switch theme |
+| `dnet font <size>` | Set interface font size |
+| `dnet new <file\|dir> <path>` | Create something |
+| `dnet panes` | List panes and their ids |
+| `dnet close <paneId>` | Close a pane |
+| `dnet layout reset` | Restore the default layout |
+| `dnet sessions` | List running shells |
+| `dnet info` | Host and workspace details |
+| `dnet calc <expr>` | Arithmetic |
+
+Adding your own is a single object appended to `CUSTOM_COMMANDS` in
+[`src/lib/customCommands.ts`](src/lib/customCommands.ts) — the file header
+documents the context object each command receives.
+
+## Theming
+
+Theming is driven by **semantic design tokens** in
+[`src/styles/dss.css`](src/styles/dss.css), derived from the D-Net Signature
+Stylesheet and retuned for IDE density. Three themes ship:
+
+- **D-Net** — the signature palette, softer, built for long sessions
+- **Arc** — full-intensity DSS cyan
+- **Alabaster** — light
+
+Every surface reads the same variables, *including* the terminal's 16-colour
+ANSI palette and the editor's syntax highlighting. A theme switch moves
+everything at once. Adding a theme means adding one token block — no component
+changes, and no `!important` anywhere.
+
+## Architecture
 
 ```
-index.html
-  └── src/main.tsx
-        └── src/App.tsx                  registers the four tools
-              └── WorkspaceContext       layout tree, settings, pane registry, event bus
-                    └── LayoutManager    recursive split/resize renderer
-                          └── <tool panes>
+src-tauri/
+  src/main.rs        Entry point
+  src/lib.rs         Command registration
+  src/pty.rs         PTY sessions, scrollback, OSC cwd parsing
+  src/fs_api.rs      Filesystem commands, Windows path handling
+  src/sysinfo.rs     Host details
 
-server.ts        Express + Vite middleware + WebSocket terminal, port 3000
-pty_bridge.py    Unix-only PTY helper spawned by server.ts (unused on Windows)
+src/
+  main.tsx           React entry
+  App.tsx            Registers the four tools
+  context/           Layout tree, settings, pane registry, event bus
+  components/        LayoutManager + the four tool panes
+  lib/api.ts         The only place the UI talks to the backend
+  lib/customCommands.ts
+  lib/terminalTheme.ts, lib/editorTheme.ts
+  styles/dss.css     Design tokens and signature primitives
+
+tools/generate_icons.py   Draws the icon set with Pillow
 ```
 
-The frontend talks to the backend over `/api/*` REST endpoints and one WebSocket at
-`/api/terminal/ws`.
+The frontend never calls `invoke` directly outside `lib/api.ts`, so the
+transport can change without touching a component.
 
-### Custom commands
+### Why there is no server
 
-`src/lib/customCommands.ts` defines the `dnet <command>` suite available inside the
-terminal — `dnet help`, `dnet edit <file>`, `dnet theme <name>`, `dnet panes`, and
-others. Each command receives a context object exposing the current working directory,
-the pane id, the full workspace API, a `print()` helper, and `executeRaw()` for
-shelling out. See the header comment in that file for how to add one.
+An earlier version of this project ran an Express server that bound `0.0.0.0`
+with no authentication and exposed both filesystem and shell-exec endpoints —
+anyone on the same network had full remote code execution. Tauri IPC is
+in-process. There is no port to reach and nothing to authenticate.
 
-## Known limitations
+## Not done yet
 
-These are the reasons this is not yet a daily driver. Each is tracked for the rebuild.
-
-- **The Windows terminal is not a real PTY.** `server.ts` spawns `cmd.exe` over plain
-  pipes and emulates a line editor in Node — echo, backspace and history are simulated,
-  and left/right arrows are discarded. Interactive programs (Python REPL, `ssh`, `vim`,
-  `git commit`, progress bars, password prompts) do not work. Tab completion does not work.
-- **Working-directory tracking is Linux-only.** It reads `/proc/<pid>/cwd`, so the path
-  indicator never updates on Windows.
-- **Terminal sessions are fragile.** A session survives unmount for only 3 seconds, and
-  changing the font size tears down and reconnects the shell.
-- **Custom commands are dispatched by scanning terminal stdout for a sentinel string.**
-  This misfires on chunk boundaries and on any output containing the sentinel.
-- **The editor is a `<textarea>`.** No syntax highlighting, no multi-cursor, no LSP.
-- **Theming overrides Tailwind class names with `!important`.** Components using an
-  unlisted colour silently escape the theme, and the terminal's colours are hardcoded
-  separately from the theme system.
-- **The server binds `0.0.0.0` with no authentication** and exposes filesystem and shell
-  endpoints. Anyone on the same network has full access. Do not run this on an untrusted
-  network in its current form.
+- Drag-and-drop from Windows Explorer, file associations, "Open with"
+  registration, global summon hotkey, tray
+- Recursive folder copy in the explorer (files copy; folders need the terminal)
+- LSP / autocomplete beyond CodeMirror's built-in word completion
+- Custom window chrome — currently uses the native title bar
+- Split-pane keyboard navigation
 
 ## Licence
 
-Unlicensed / private.
+Private. © D-Net Lab.

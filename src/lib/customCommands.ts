@@ -1,12 +1,29 @@
-import { useWorkspace } from "../context/WorkspaceContext";
+/**
+ * The `dnet` command suite.
+ *
+ * Commands are matched on the *input* line, in the frontend, before a single
+ * byte reaches the shell. The previous design injected a `doskey` alias that
+ * echoed a sentinel string and then scanned the shell's stdout for it, which
+ * meant: a sentinel split across two reads was missed, printing any file that
+ * contained the sentinel triggered a command, and the alias did not survive
+ * into a nested shell. None of those failure modes exist here.
+ *
+ * ── Adding a command ──────────────────────────────────────────────────────
+ * Append to CUSTOM_COMMANDS below. Each command receives:
+ *   args  — everything after `dnet <name>`, split on whitespace
+ *   ctx   — { cwd, paneId, sessionId, workspace, print }
+ * `print` writes to the terminal; use \n freely, it is converted to \r\n.
+ */
+
+import type { useWorkspace } from "../context/WorkspaceContext";
+import { fs, paths, pty, systemInfo, errorText } from "./api";
 
 export interface CommandContext {
   cwd: string;
-  setCwd: (cwd: string) => void;
   paneId: string;
+  sessionId: string;
   workspace: ReturnType<typeof useWorkspace>;
-  print: (text: string, type?: "stdout" | "stderr" | "system") => void;
-  executeRaw: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number; cwd?: string }>;
+  print: (text: string) => void;
 }
 
 export interface CustomCommand {
@@ -16,347 +33,337 @@ export interface CustomCommand {
   execute: (args: string[], ctx: CommandContext) => void | Promise<void>;
 }
 
+/** The prefix that marks a line as ours rather than the shell's. */
+export const COMMAND_PREFIX = "dnet";
+
+const DIM = "\x1b[90m";
+const ACCENT = "\x1b[36m";
+const OK = "\x1b[32m";
+const ERR = "\x1b[31m";
+const BOLD = "\x1b[1m";
+const RESET = "\x1b[0m";
+
+/** Split a command line, honouring double-quoted segments. */
+function tokenize(line: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) out.push(m[1] ?? m[2]);
+  return out;
+}
+
+export interface MatchedCommand {
+  command: CustomCommand;
+  args: string[];
+}
+
 /**
- * =========================================================================
- * HOW TO ADD YOUR OWN CUSTOM COMMAND:
- * =========================================================================
- * 1. Add a new command object to the `CUSTOM_COMMANDS` array below.
- * 2. Define its `name`, `description`, and `usage` instructions.
- * 3. Implement the `execute` function. You have access to:
- *    - `args`: string array of params passed (e.g. `dnet command arg1 arg2`)
- *    - `ctx`: an object with helper functions and current states:
- *         - `cwd`: current shell working directory path
- *         - `setCwd`: function to change shell working directory
- *         - `paneId`: ID of the terminal pane running this command
- *         - `workspace`: complete workspace context (splitPane, setPaneState, updateSettings, etc.)
- *         - `print(text, type)`: print text into terminal output console (types: "stdout", "stderr", "system")
- *         - `executeRaw(cmd)`: run a standard system bash/cmd command on the backend server
- *
- * Example:
- * {
- *   name: "greet",
- *   description: "Prints a warm greeting with an optional name parameter",
- *   usage: "dnet greet [your-name]",
- *   execute: (args, ctx) => {
- *     const name = args[0] || "Developer";
- *     ctx.print(`Hello, ${name}! Welcome to the dnet workspace environment.`, "stdout");
- *   }
- * }
- * =========================================================================
+ * Decide whether a typed line is a `dnet` invocation.
+ * Returns null for anything the shell should handle itself.
  */
-export const CUSTOM_COMMANDS: CustomCommand[] = [
-  {
-    name: "help",
-    description: "Displays list of all available dnet commands",
-    usage: "dnet help",
-    execute: (args, ctx) => {
-      ctx.print("\x1b[1;34mDNET CUSTOM COMMAND SUITE\x1b[0m", "system");
-      ctx.print("\x1b[90m==================================================\x1b[0m", "system");
-      CUSTOM_COMMANDS.forEach((cmd) => {
-        ctx.print(`\x1b[1;32mdnet ${cmd.name}\x1b[0m`, "stdout");
-        ctx.print(`  \x1b[90mDesc :\x1b[0m ${cmd.description}`, "stdout");
-        ctx.print(`  \x1b[90mUsage:\x1b[0m \x1b[36m${cmd.usage}\x1b[0m\n`, "stdout");
-      });
-      ctx.print("\x1b[90m==================================================\x1b[0m", "system");
-      ctx.print("\x1b[35mCustomize in:\x1b[0m /src/lib/customCommands.ts", "system");
+export function matchCustomCommand(line: string): MatchedCommand | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const tokens = tokenize(trimmed);
+  if (tokens[0]?.toLowerCase() !== COMMAND_PREFIX) return null;
+
+  const name = tokens[1]?.toLowerCase();
+  if (!name) {
+    return { command: HELP_COMMAND, args: [] };
+  }
+
+  const command = CUSTOM_COMMANDS.find((c) => c.name === name);
+  if (!command) {
+    return { command: unknownCommand(name), args: [] };
+  }
+
+  return { command, args: tokens.slice(2) };
+}
+
+export async function runCustomCommand(
+  matched: MatchedCommand,
+  ctx: CommandContext,
+): Promise<void> {
+  try {
+    await matched.command.execute(matched.args, ctx);
+  } catch (err) {
+    ctx.print(`${ERR}${errorText(err)}${RESET}\n`);
+  }
+}
+
+function unknownCommand(name: string): CustomCommand {
+  return {
+    name,
+    description: "",
+    usage: "",
+    execute: (_args, ctx) => {
+      ctx.print(`${ERR}unknown command '${name}'${RESET}\n`);
+      ctx.print(`${DIM}run 'dnet help' for the list${RESET}\n`);
     },
+  };
+}
+
+/** Resolve a user-supplied path against the terminal's working directory. */
+function resolveArg(ctx: CommandContext, input: string): string {
+  return paths.resolve(ctx.cwd || "", input);
+}
+
+const HELP_COMMAND: CustomCommand = {
+  name: "help",
+  description: "List every dnet command",
+  usage: "dnet help",
+  execute: (_args, ctx) => {
+    ctx.print(`${BOLD}${ACCENT}ARCLIGHT${RESET}${DIM} · dnet command suite${RESET}\n\n`);
+    for (const cmd of CUSTOM_COMMANDS) {
+      ctx.print(`  ${ACCENT}${cmd.usage.padEnd(42)}${RESET}${DIM}${cmd.description}${RESET}\n`);
+    }
+    ctx.print(`\n${DIM}defined in src/lib/customCommands.ts${RESET}\n`);
   },
+};
+
+export const CUSTOM_COMMANDS: CustomCommand[] = [
+  HELP_COMMAND,
+
   {
     name: "edit",
-    description: "Opens a file in the workspace code editor, splitting the pane",
-    usage: "dnet edit <filename> [-h | --horizontal] [-v | --vertical]",
-    execute: async (args, ctx) => {
-      if (args.length === 0) {
-        ctx.print("Error: Filename is required.", "stderr");
-        ctx.print("Usage: dnet edit <filename> [-h | --horizontal] [-v | --vertical]", "system");
-        return;
-      }
-
-      // Parse options
-      let filename = "";
-      let direction: "horizontal" | "vertical" = "vertical";
-
-      for (const arg of args) {
-        if (arg === "-h" || arg === "--horizontal") {
-          direction = "horizontal";
-        } else if (arg === "-v" || arg === "--vertical") {
-          direction = "vertical";
-        } else if (!arg.startsWith("-")) {
-          filename = arg;
-        }
-      }
-
-      if (!filename) {
-        ctx.print("Error: Filename is required.", "stderr");
-        return;
-      }
-
-      // Resolve relative file path based on current shell working directory
-      let resolvedPath = filename;
-      if (ctx.cwd && ctx.cwd !== "." && !filename.startsWith("/")) {
-        resolvedPath = `${ctx.cwd}/${filename}`.replace(/\/+/g, "/");
-      }
-
-      ctx.print(`Opening '${resolvedPath}' in a new ${direction} editor split...`, "system");
-      
-      // Perform the layout split action
-      ctx.workspace.splitPane(ctx.paneId, direction, "editor", { filePath: resolvedPath });
-    },
-  },
-  {
-    name: "terminal",
-    description: "Opens another terminal in a new workspace split pane",
-    usage: "dnet terminal [-h | --horizontal] [-v | --vertical]",
+    description: "Open a file in a new editor split",
+    usage: "dnet edit <file> [-h|-v]",
     execute: (args, ctx) => {
-      let direction: "horizontal" | "vertical" = "vertical";
-      for (const arg of args) {
-        if (arg === "-h" || arg === "--horizontal") {
-          direction = "horizontal";
-        } else if (arg === "-v" || arg === "--vertical") {
-          direction = "vertical";
-        }
+      const files = args.filter((a) => !a.startsWith("-"));
+      if (files.length === 0) {
+        ctx.print(`${ERR}usage: dnet edit <file> [-h|-v]${RESET}\n`);
+        return;
       }
-
-      ctx.print(`Opening a new ${direction} terminal split...`, "system");
-      ctx.workspace.splitPane(ctx.paneId, direction, "terminal", { terminalCwd: ctx.cwd });
+      const direction = args.some((a) => a === "-h" || a === "--horizontal")
+        ? "horizontal"
+        : "vertical";
+      const filePath = resolveArg(ctx, files[0]);
+      ctx.workspace.splitPane(ctx.paneId, direction, "editor", { filePath });
+      ctx.print(`${OK}opened${RESET} ${filePath}\n`);
     },
   },
+
+  {
+    name: "open",
+    description: "Open a file in the active editor pane",
+    usage: "dnet open <file>",
+    execute: (args, ctx) => {
+      if (!args[0]) {
+        ctx.print(`${ERR}usage: dnet open <file>${RESET}\n`);
+        return;
+      }
+      const filePath = resolveArg(ctx, args[0]);
+      ctx.workspace.emitEvent("open-file", {
+        path: filePath,
+        sourcePaneId: ctx.paneId,
+      });
+      ctx.print(`${OK}opened${RESET} ${filePath}\n`);
+    },
+  },
+
+  {
+    name: "term",
+    description: "Open another terminal split at this directory",
+    usage: "dnet term [-h|-v]",
+    execute: (args, ctx) => {
+      const direction = args.some((a) => a === "-h" || a === "--horizontal")
+        ? "horizontal"
+        : "vertical";
+      ctx.workspace.splitPane(ctx.paneId, direction, "terminal", {
+        terminalCwd: ctx.cwd,
+      });
+      ctx.print(`${OK}new ${direction} terminal${RESET}\n`);
+    },
+  },
+
+  {
+    name: "explore",
+    description: "Open a file explorer split at this directory",
+    usage: "dnet explore [-h|-v]",
+    execute: (args, ctx) => {
+      const direction = args.some((a) => a === "-h" || a === "--horizontal")
+        ? "horizontal"
+        : "vertical";
+      ctx.workspace.splitPane(ctx.paneId, direction, "file-explorer", {
+        currentPath: ctx.cwd,
+      });
+      ctx.print(`${OK}new explorer at${RESET} ${ctx.cwd}\n`);
+    },
+  },
+
+  {
+    name: "reveal",
+    description: "Show the current directory in Windows Explorer",
+    usage: "dnet reveal [path]",
+    execute: async (args, ctx) => {
+      const target = args[0] ? resolveArg(ctx, args[0]) : ctx.cwd;
+      await fs.revealInExplorer(target);
+      ctx.print(`${OK}revealed${RESET} ${target}\n`);
+    },
+  },
+
   {
     name: "theme",
-    description: "Changes the workspace active visual theme",
-    usage: "dnet theme <slate | obsidian | cyberpunk | light>",
+    description: "Switch theme (dnet | arc | light)",
+    usage: "dnet theme <name>",
     execute: (args, ctx) => {
-      const allowed = ["slate", "obsidian", "cyberpunk", "light"];
-      const requested = args[0]?.toLowerCase();
+      const allowed = ["dnet", "arc", "light"] as const;
+      const requested = args[0]?.toLowerCase() as (typeof allowed)[number];
       if (!requested || !allowed.includes(requested)) {
-        ctx.print(`Error: Invalid theme. Choose from: ${allowed.join(", ")}`, "stderr");
+        ctx.print(`${DIM}current: ${ctx.workspace.settings.theme}${RESET}\n`);
+        ctx.print(`${DIM}available: ${allowed.join(", ")}${RESET}\n`);
         return;
       }
-      ctx.print(`Changing theme to '${requested}'...`, "system");
-      ctx.workspace.updateSettings({ theme: requested as any });
+      ctx.workspace.updateSettings({ theme: requested });
+      ctx.print(`${OK}theme →${RESET} ${requested}\n`);
     },
   },
+
+  {
+    name: "font",
+    description: "Set the interface font size in px",
+    usage: "dnet font <size>",
+    execute: (args, ctx) => {
+      const size = Number(args[0]);
+      if (!Number.isFinite(size) || size < 8 || size > 32) {
+        ctx.print(`${DIM}current: ${ctx.workspace.settings.fontSize}px (8-32)${RESET}\n`);
+        return;
+      }
+      ctx.workspace.updateSettings({ fontSize: size });
+      ctx.print(`${OK}font →${RESET} ${size}px\n`);
+    },
+  },
+
+  {
+    name: "new",
+    description: "Create a file or directory",
+    usage: "dnet new <file|dir> <path>",
+    execute: async (args, ctx) => {
+      const kind = args[0]?.toLowerCase();
+      if ((kind !== "file" && kind !== "dir") || !args[1]) {
+        ctx.print(`${ERR}usage: dnet new <file|dir> <path>${RESET}\n`);
+        return;
+      }
+      const target = resolveArg(ctx, args[1]);
+      const created = await fs.create(target, kind);
+      ctx.workspace.emitEvent("refresh-explorer", { path: ctx.cwd });
+      ctx.print(`${OK}created${RESET} ${created}\n`);
+    },
+  },
+
+  {
+    name: "panes",
+    description: "List the open panes and their ids",
+    usage: "dnet panes",
+    execute: (_args, ctx) => {
+      const registry = ctx.workspace.panesRegistry ?? [];
+      if (registry.length === 0) {
+        ctx.print(`${DIM}no panes${RESET}\n`);
+        return;
+      }
+      ctx.print(
+        `${DIM}${"ID".padEnd(20)}${"TOOL".padEnd(16)}${"ACTIVE".padEnd(8)}CONTEXT${RESET}\n`,
+      );
+      for (const pane of registry) {
+        const context =
+          pane.state?.filePath ?? pane.state?.terminalCwd ?? pane.state?.currentPath ?? "-";
+        const active = pane.isActive ? `${ACCENT}yes${RESET}   ` : "no    ";
+        ctx.print(
+          `${pane.id.padEnd(20)}${pane.pluginType.padEnd(16)}${active}${DIM}${context}${RESET}\n`,
+        );
+      }
+    },
+  },
+
+  {
+    name: "close",
+    description: "Close a pane by id",
+    usage: "dnet close <paneId>",
+    execute: (args, ctx) => {
+      const target = args[0] ?? ctx.paneId;
+      const exists = (ctx.workspace.panesRegistry ?? []).some((p) => p.id === target);
+      if (!exists) {
+        ctx.print(`${ERR}no pane '${target}'${RESET}\n`);
+        return;
+      }
+      ctx.workspace.closePane(target);
+      ctx.print(`${OK}closed${RESET} ${target}\n`);
+    },
+  },
+
   {
     name: "layout",
-    description: "Manages the workspace layout structure",
+    description: "Reset the workspace layout",
     usage: "dnet layout reset",
     execute: (args, ctx) => {
-      if (args[0] === "reset") {
-        ctx.print("Resetting workspace layout to default schema...", "system");
-        ctx.workspace.resetLayout();
-      } else {
-        ctx.print("Usage: dnet layout reset", "stderr");
+      if (args[0] !== "reset") {
+        ctx.print(`${DIM}usage: dnet layout reset${RESET}\n`);
+        return;
+      }
+      ctx.workspace.resetLayout();
+      ctx.print(`${OK}layout reset${RESET}\n`);
+    },
+  },
+
+  {
+    name: "sessions",
+    description: "List running terminal sessions",
+    usage: "dnet sessions",
+    execute: async (_args, ctx) => {
+      const sessions = await pty.list();
+      if (sessions.length === 0) {
+        ctx.print(`${DIM}none${RESET}\n`);
+        return;
+      }
+      for (const s of sessions) {
+        const mark = s.id === ctx.sessionId ? `${ACCENT}*${RESET}` : " ";
+        const status = s.alive ? `${OK}alive${RESET}` : `${ERR}dead ${RESET}`;
+        ctx.print(`${mark} ${s.id.padEnd(22)}${status}  ${s.shell.padEnd(12)}${DIM}${s.cwd}${RESET}\n`);
       }
     },
   },
+
   {
     name: "info",
-    description: "Displays workspace state and host system information",
+    description: "Show host and workspace details",
     usage: "dnet info",
-    execute: async (args, ctx) => {
-      ctx.print("Gathering workspace and host status info...", "system");
-      try {
-        const res = await fetch("/api/system/info");
-        if (res.ok) {
-          const sys = await res.json();
-          ctx.print(`  Host Platform : ${sys.platform} (${sys.arch})`, "stdout");
-          ctx.print(`  Node Version  : ${sys.nodeVersion}`, "stdout");
-          ctx.print(`  Workspace Root: ${sys.rootDir}`, "stdout");
-        }
-      } catch (err: any) {
-        ctx.print(`Could not fetch system info: ${err.message}`, "stderr");
-      }
-      ctx.print(`  Current CWD   : ${ctx.cwd}`, "stdout");
-      ctx.print(`  Active Theme  : ${ctx.workspace.settings.theme}`, "stdout");
-      ctx.print(`  Font Size     : ${ctx.workspace.settings.fontSize}px`, "stdout");
+    execute: async (_args, ctx) => {
+      const sys = await systemInfo();
+      const row = (k: string, v: string) =>
+        ctx.print(`  ${DIM}${k.padEnd(12)}${RESET}${v}\n`);
+      ctx.print(`${BOLD}${ACCENT}ARCLIGHT${RESET} ${DIM}v${sys.app_version}${RESET}\n`);
+      row("host", `${sys.hostname ?? "?"} (${sys.os}/${sys.arch})`);
+      row("user", sys.username ?? "?");
+      row("home", sys.home_dir ?? "?");
+      row("cwd", ctx.cwd || "?");
+      row("theme", ctx.workspace.settings.theme);
+      row("font", `${ctx.workspace.settings.fontSize}px`);
+      row("panes", String((ctx.workspace.panesRegistry ?? []).length));
     },
   },
+
   {
     name: "calc",
-    description: "Evaluates a simple mathematical expression",
+    description: "Evaluate an arithmetic expression",
     usage: "dnet calc <expression>",
     execute: (args, ctx) => {
       const expr = args.join(" ");
       if (!expr) {
-        ctx.print("Usage: dnet calc <expression> (e.g., dnet calc 120 * 4.5)", "system");
+        ctx.print(`${DIM}usage: dnet calc 120 * 4.5${RESET}\n`);
+        return;
+      }
+      // Arithmetic only — refuse anything that is not numbers and operators,
+      // so this cannot become an arbitrary-code entry point.
+      if (!/^[0-9+\-*/%.()\s,]+$/.test(expr)) {
+        ctx.print(`${ERR}only numbers and + - * / % ( ) are allowed${RESET}\n`);
         return;
       }
       try {
-        // Safe evaluation of mathematical expression
-        const safeFunc = new Function(`return (${expr})`);
-        const result = safeFunc();
-        ctx.print(`${expr} = ${result}`, "stdout");
-      } catch (err: any) {
-        ctx.print(`Error evaluating expression: ${err.message}`, "stderr");
-      }
-    },
-  },
-  {
-    name: "create",
-    description: "Creates a new file or directory inside the current path",
-    usage: "dnet create <file | dir> <path>",
-    execute: async (args, ctx) => {
-      const type = args[0]?.toLowerCase();
-      const relativePath = args[1];
-      if (!type || !relativePath || (type !== "file" && type !== "dir")) {
-        ctx.print("Usage: dnet create <file | dir> <path>", "stderr");
-        return;
-      }
-
-      let resolvedPath = relativePath;
-      if (ctx.cwd && ctx.cwd !== "." && !relativePath.startsWith("/")) {
-        resolvedPath = `${ctx.cwd}/${relativePath}`.replace(/\/+/g, "/");
-      }
-
-      ctx.print(`Creating ${type} at '${resolvedPath}'...`, "system");
-
-      try {
-        const res = await fetch("/api/files/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: resolvedPath, type }),
-        });
-
-        if (!res.ok) {
-          const errData = await res.json();
-          throw new Error(errData.error || "Creation failed");
-        }
-
-        ctx.print(`Successfully created ${type} at '${resolvedPath}'`, "stdout");
-        // Emit a refresh event so the explorer is notified to reload!
-        ctx.workspace.emitEvent("refresh-explorer", { path: ctx.cwd });
-      } catch (err: any) {
-        ctx.print(`Error creating ${type}: ${err.message}`, "stderr");
-      }
-    },
-  },
-  {
-    name: "focus",
-    description: "Highlights/focuses a specific pane by its ID or toggles fullscreen view",
-    usage: "dnet focus [paneId]",
-    execute: (args, ctx) => {
-      const targetId = args[0];
-      if (!targetId) {
-        ctx.print("Toggling full-screen focus view for this pane...", "system");
-        ctx.workspace.emitEvent("toggle-focus", { paneId: ctx.paneId });
-        return;
-      }
-      const registry = ctx.workspace.panesRegistry || [];
-      const found = registry.find((p) => p.id === targetId);
-      if (!found) {
-        ctx.print(`Error: Pane with ID '${targetId}' not found. Run 'dnet panes' to see active IDs.`, "stderr");
-        return;
-      }
-      ctx.workspace.setActivePaneId(targetId);
-      ctx.print(`Focused/highlighted pane '${targetId}'.`, "stdout");
-    },
-  },
-  {
-    name: "panes",
-    description: "Lists all currently active workspace panes in the registry",
-    usage: "dnet panes",
-    execute: (args, ctx) => {
-      const registry = ctx.workspace.panesRegistry || [];
-      if (registry.length === 0) {
-        ctx.print("No active panes in the registry.", "system");
-        return;
-      }
-      ctx.print("Active Panes Registry:\n", "system");
-      ctx.print(
-        "ID".padEnd(25) + "Tool/View".padEnd(20) + "Highlighted?".padEnd(15) + "CWD/File Path\n",
-        "system"
-      );
-      ctx.print("-".repeat(80) + "\n", "system");
-      registry.forEach((p) => {
-        const isSel = p.isActive ? "YES" : "No";
-        let attr = "";
-        if (p.pluginType === "file-explorer" && p.state?.currentPath) {
-          attr = `cwd: ${p.state.currentPath}`;
-        } else if (p.pluginType === "editor" && p.state?.filePath) {
-          attr = `file: ${p.state.filePath}`;
-        } else if (p.pluginType === "terminal" && p.state?.terminalCwd) {
-          attr = `cwd: ${p.state.terminalCwd}`;
-        } else {
-          attr = "-";
-        }
-        ctx.print(`${p.id.padEnd(25)}${p.pluginType.padEnd(20)}${isSel.padEnd(15)}${attr}\n`, "stdout");
-      });
-    },
-  },
-  {
-    name: "close",
-    description: "Closes or pops history for a specific pane by its ID",
-    usage: "dnet close <paneId>",
-    execute: (args, ctx) => {
-      const targetId = args[0];
-      if (!targetId) {
-        ctx.print("Usage: dnet close <paneId>", "stderr");
-        return;
-      }
-      const registry = ctx.workspace.panesRegistry || [];
-      const found = registry.find((p) => p.id === targetId);
-      if (!found) {
-        ctx.print(`Error: Pane with ID '${targetId}' not found.`, "stderr");
-        return;
-      }
-      ctx.workspace.closePane(targetId);
-      ctx.print(`Closed/Popped history for pane '${targetId}'.`, "stdout");
-    },
-  },
-  {
-    name: "set-tool",
-    description: "Changes the tool/view of a specific pane",
-    usage: "dnet set-tool <paneId> <editor | terminal | file-explorer | settings>",
-    execute: (args, ctx) => {
-      const paneId = args[0];
-      const toolType = args[1];
-      const allowed = ["editor", "terminal", "file-explorer", "settings"];
-      if (!paneId || !toolType || !allowed.includes(toolType)) {
-        ctx.print("Usage: dnet set-tool <paneId> <editor | terminal | file-explorer | settings>", "stderr");
-        return;
-      }
-      const registry = ctx.workspace.panesRegistry || [];
-      const found = registry.find((p) => p.id === paneId);
-      if (!found) {
-        ctx.print(`Error: Pane with ID '${paneId}' not found.`, "stderr");
-        return;
-      }
-      ctx.workspace.setPanePlugin(paneId, toolType);
-      ctx.print(`Changed pane '${paneId}' tool view to '${toolType}'.`, "stdout");
-    },
-  },
-  {
-    name: "open",
-    description: "Opens a file in a target editor pane, or the highlighted pane",
-    usage: "dnet open <filePath> [paneId]",
-    execute: (args, ctx) => {
-      const filePath = args[0];
-      const targetPaneId = args[1];
-      if (!filePath) {
-        ctx.print("Usage: dnet open <filePath> [paneId]", "stderr");
-        return;
-      }
-
-      let resolvedPath = filePath;
-      if (ctx.cwd && ctx.cwd !== "." && !filePath.startsWith("/")) {
-        resolvedPath = `${ctx.cwd}/${filePath}`.replace(/\/+/g, "/");
-      }
-
-      const registry = ctx.workspace.panesRegistry || [];
-
-      if (targetPaneId) {
-        const found = registry.find((p) => p.id === targetPaneId);
-        if (!found) {
-          ctx.print(`Error: Pane with ID '${targetPaneId}' not found.`, "stderr");
-          return;
-        }
-        ctx.workspace.setPanePlugin(targetPaneId, "editor");
-        ctx.workspace.setPaneState(targetPaneId, { filePath: resolvedPath });
-        ctx.workspace.setActivePaneId(targetPaneId);
-        ctx.print(`Opened '${resolvedPath}' in pane '${targetPaneId}'.`, "stdout");
-      } else {
-        ctx.workspace.emitEvent("open-file", { path: resolvedPath, sourcePaneId: ctx.workspace.activePaneId });
-        ctx.print(`Opened '${resolvedPath}' in the highlighted pane context.`, "stdout");
+        const result = new Function(`"use strict"; return (${expr});`)();
+        ctx.print(`${expr} ${DIM}=${RESET} ${ACCENT}${result}${RESET}\n`);
+      } catch {
+        ctx.print(`${ERR}could not evaluate '${expr}'${RESET}\n`);
       }
     },
   },

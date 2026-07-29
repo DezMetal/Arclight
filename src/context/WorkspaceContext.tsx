@@ -1,12 +1,20 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
 import { LayoutNode, PaneLeaf, SplitDirection, PluginDefinition } from "../types";
 
+export type ThemeName = "dnet" | "arc" | "light";
+
+export const THEMES: { id: ThemeName; label: string; description: string }[] = [
+  { id: "dnet", label: "D-Net", description: "Signature palette, tuned for long sessions" },
+  { id: "arc", label: "Arc", description: "Full-intensity DSS cyan" },
+  { id: "light", label: "Alabaster", description: "Clean light surface" },
+];
+
 interface WorkspaceSettings {
   fontSize: number;
   tabSize: number;
   autosave: boolean;
   showHidden: boolean;
-  theme: "slate" | "obsidian" | "cyberpunk" | "light";
+  theme: ThemeName;
   rememberState: boolean;
 }
 
@@ -40,11 +48,12 @@ interface WorkspaceContextProps {
 
 const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(undefined);
 
+/** Explorer down the left, editor above terminal on the right. */
 const DEFAULT_LAYOUT: LayoutNode = {
   type: "split",
   id: "split_root",
   direction: "horizontal",
-  splitPercentage: 22,
+  splitPercentage: 20,
   left: {
     type: "leaf",
     id: "pane_explorer",
@@ -52,26 +61,41 @@ const DEFAULT_LAYOUT: LayoutNode = {
     state: {},
   },
   right: {
-    type: "leaf",
-    id: "pane_editor",
-    pluginType: "editor",
-    state: {},
+    type: "split",
+    id: "split_right",
+    direction: "vertical",
+    splitPercentage: 62,
+    left: {
+      type: "leaf",
+      id: "pane_editor",
+      pluginType: "editor",
+      state: {},
+    },
+    right: {
+      type: "leaf",
+      id: "pane_terminal",
+      pluginType: "terminal",
+      state: {},
+    },
   },
 };
 
 const DEFAULT_SETTINGS: WorkspaceSettings = {
-  fontSize: 14,
+  fontSize: 13,
   tabSize: 2,
   autosave: true,
   showHidden: false,
-  theme: "slate",
+  theme: "dnet",
   rememberState: true,
 };
+
+const SETTINGS_KEY = "arclight_settings";
+const LAYOUT_KEY = "arclight_layout";
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<WorkspaceSettings>(() => {
     try {
-      const saved = localStorage.getItem("dev_workspace_settings");
+      const saved = localStorage.getItem(SETTINGS_KEY);
       return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
     } catch {
       return DEFAULT_SETTINGS;
@@ -80,12 +104,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(() => {
     try {
-      const settingsSaved = localStorage.getItem("dev_workspace_settings");
+      const settingsSaved = localStorage.getItem(SETTINGS_KEY);
       const parsedSettings = settingsSaved ? JSON.parse(settingsSaved) : null;
       const remember = parsedSettings ? parsedSettings.rememberState !== false : true;
       if (!remember) return DEFAULT_LAYOUT;
 
-      const saved = localStorage.getItem("dev_workspace_layout");
+      const saved = localStorage.getItem(LAYOUT_KEY);
       return saved ? JSON.parse(saved) : DEFAULT_LAYOUT;
     } catch {
       return DEFAULT_LAYOUT;
@@ -126,21 +150,21 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Save layout tree on modification if rememberState is enabled
   useEffect(() => {
     if (settings.rememberState && layoutTree) {
-      localStorage.setItem("dev_workspace_layout", JSON.stringify(layoutTree));
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutTree));
     } else if (!settings.rememberState) {
-      localStorage.removeItem("dev_workspace_layout");
+      localStorage.removeItem(LAYOUT_KEY);
     }
   }, [layoutTree, settings.rememberState]);
 
   // Save settings on modification and apply theme body class
   useEffect(() => {
-    localStorage.setItem("dev_workspace_settings", JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     
-    // Clean old theme classes
-    document.body.classList.remove("theme-slate", "theme-obsidian", "theme-cyberpunk", "theme-light");
-    // Add new theme class
-    const currentTheme = settings.theme || "slate";
-    document.body.classList.add(`theme-${currentTheme}`);
+    // The theme class goes on <html>, not <body>, so that code reading tokens
+    // off documentElement (the terminal palette) sees the active theme.
+    const root = document.documentElement;
+    THEMES.forEach((t) => root.classList.remove(`theme-${t.id}`));
+    root.classList.add(`theme-${settings.theme || "dnet"}`);
   }, [settings]);
 
   // Event Broadcasting Implementation

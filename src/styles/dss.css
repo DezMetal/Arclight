@@ -1,0 +1,456 @@
+/*
+ * Arclight — DSS token layer
+ *
+ * Derived from D-Net Signature Stylesheet v5.0, retuned for IDE chrome.
+ *
+ * The upstream DSS is built for documents: 1.5rem/2.5rem card padding, 85rem
+ * max widths, backdrop-blur on every surface. A tiled workspace needs dense
+ * chrome and cannot afford a blur pass per pane at 60fps, so the geometry and
+ * effect scales here are tighter and blur is opt-in via .dss-blur.
+ *
+ * Everything downstream — panes, buttons, and the terminal's 16-colour ANSI
+ * palette — reads these variables. Nothing overrides Tailwind class names.
+ */
+
+:root {
+  /* -- Typography -- */
+  --dss-font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --dss-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  /* -- Geometry, retuned for IDE density -- */
+  --dss-cut-size: 10px;
+  --dss-cut-sm: 6px;
+  --dss-animation-speed: 0.16s;
+  --dss-border-thickness: 1px;
+  --dss-glow-blur: 10px;
+  --dss-glow-spread: 1px;
+  --dss-backdrop-blur: 12px;
+  --dss-module-opacity: 0.92;
+
+  /* -- Z-index hierarchy -- */
+  --dss-z-dropdown: 900;
+  --dss-z-tooltip: 950;
+  --dss-z-modal: 1000;
+  --dss-z-toast: 1100;
+}
+
+/* ==========================================================================
+   Theme: D-Net (default)
+   The palette that ships live in dss.css — softer, built for long sessions.
+   ========================================================================== */
+:root,
+.theme-dnet {
+  --dss-bg-app: #0d1117;
+  --dss-bg-panel: #161b22;
+  --dss-bg-surface: #1c2128;
+  --dss-bg-input: #010409;
+
+  --dss-border: rgba(0, 83, 179, 0.5);
+  --dss-border-soft: rgba(139, 148, 158, 0.22);
+
+  --dss-text: #c9d1d9;
+  --dss-text-dim: #8b949e;
+  --dss-text-faint: #6e7681;
+
+  --dss-accent: #9fbffe;
+  --dss-accent-hot: #00e0ff;
+
+  --dss-success: #2f855a;
+  --dss-warning: #d69e2e;
+  --dss-error: #c53030;
+  --dss-destructive: #f87171;
+
+  --dss-texture: rgba(255, 255, 255, 0.035);
+
+  /* Terminal ANSI palette, tuned against --dss-bg-app */
+  --term-bg: #0d1117;
+  --term-fg: #c9d1d9;
+  --term-cursor: #9fbffe;
+  --term-selection: rgba(159, 191, 254, 0.26);
+  --term-black: #161b22;
+  --term-red: #ff7b72;
+  --term-green: #3fb950;
+  --term-yellow: #d29922;
+  --term-blue: #58a6ff;
+  --term-magenta: #bc8cff;
+  --term-cyan: #39c5cf;
+  --term-white: #b1bac4;
+  --term-bright-black: #6e7681;
+  --term-bright-red: #ffa198;
+  --term-bright-green: #56d364;
+  --term-bright-yellow: #e3b341;
+  --term-bright-blue: #79c0ff;
+  --term-bright-magenta: #d2a8ff;
+  --term-bright-cyan: #56d4dd;
+  --term-bright-white: #f0f6fc;
+}
+
+/* ==========================================================================
+   Theme: Arc — the declared DSS signature cyan, at full intensity
+   ========================================================================== */
+.theme-arc {
+  --dss-bg-app: #080b10;
+  --dss-bg-panel: #0d1117;
+  --dss-bg-surface: #141a22;
+  --dss-bg-input: #000000;
+
+  --dss-border: rgba(0, 224, 255, 0.36);
+  --dss-border-soft: rgba(0, 224, 255, 0.16);
+
+  --dss-text: #d6e4ea;
+  --dss-text-dim: #7d99a5;
+  --dss-text-faint: #5a7280;
+
+  --dss-accent: #00e0ff;
+  --dss-accent-hot: #7df9ff;
+
+  --dss-success: #2f855a;
+  --dss-warning: #d69e2e;
+  --dss-error: #c53030;
+  --dss-destructive: #f87171;
+
+  --dss-texture: rgba(0, 224, 255, 0.05);
+
+  --dss-glow-blur: 14px;
+  --dss-glow-spread: 2px;
+
+  --term-bg: #080b10;
+  --term-fg: #d6e4ea;
+  --term-cursor: #00e0ff;
+  --term-selection: rgba(0, 224, 255, 0.24);
+  --term-black: #0d1117;
+  --term-red: #ff6b7a;
+  --term-green: #2ee6a8;
+  --term-yellow: #ffd166;
+  --term-blue: #4aa8ff;
+  --term-magenta: #c77dff;
+  --term-cyan: #00e0ff;
+  --term-white: #b8ccd6;
+  --term-bright-black: #46606e;
+  --term-bright-red: #ff9aa5;
+  --term-bright-green: #72f1b8;
+  --term-bright-yellow: #ffe29a;
+  --term-bright-blue: #82c7ff;
+  --term-bright-magenta: #e0aaff;
+  --term-bright-cyan: #7df9ff;
+  --term-bright-white: #ffffff;
+}
+
+/* ==========================================================================
+   Theme: Alabaster — light
+   ========================================================================== */
+.theme-light {
+  --dss-bg-app: #f0f2f5;
+  --dss-bg-panel: #ffffff;
+  --dss-bg-surface: #f6f8fa;
+  --dss-bg-input: #eaedf1;
+
+  --dss-border: rgba(0, 0, 0, 0.14);
+  --dss-border-soft: rgba(0, 0, 0, 0.08);
+
+  --dss-text: #22272e;
+  --dss-text-dim: #57606a;
+  --dss-text-faint: #7d868f;
+
+  --dss-accent: #0053b3;
+  --dss-accent-hot: #0069e0;
+
+  --dss-success: #1a7f37;
+  --dss-warning: #9a6700;
+  --dss-error: #cf222e;
+  --dss-destructive: #d1242f;
+
+  --dss-texture: rgba(0, 0, 0, 0.035);
+
+  --dss-glow-blur: 5px;
+  --dss-glow-spread: 0px;
+
+  --term-bg: #ffffff;
+  --term-fg: #24292f;
+  --term-cursor: #0053b3;
+  --term-selection: rgba(0, 83, 179, 0.18);
+  --term-black: #24292f;
+  --term-red: #cf222e;
+  --term-green: #116329;
+  --term-yellow: #4d2d00;
+  --term-blue: #0969da;
+  --term-magenta: #8250df;
+  --term-cyan: #1b7c83;
+  --term-white: #6e7781;
+  --term-bright-black: #57606a;
+  --term-bright-red: #a40e26;
+  --term-bright-green: #1a7f37;
+  --term-bright-yellow: #633c01;
+  --term-bright-blue: #218bff;
+  --term-bright-magenta: #a475f9;
+  --term-bright-cyan: #3192aa;
+  --term-bright-white: #8c959f;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--dss-font-sans);
+  background-color: var(--dss-bg-app);
+  color: var(--dss-text);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition:
+    background-color var(--dss-animation-speed) ease,
+    color var(--dss-animation-speed) ease;
+}
+
+/* Chrome should not feel like a document: no text selection outside content. */
+body,
+.dss-chrome {
+  user-select: none;
+  cursor: default;
+}
+
+.dss-selectable {
+  user-select: text;
+  cursor: auto;
+}
+
+/* ==========================================================================
+   Signature primitives
+   ========================================================================== */
+
+/* The DSS chamfer: top-left and bottom-right corners cut. */
+.dss-cut {
+  clip-path: polygon(
+    0 var(--dss-cut-size),
+    var(--dss-cut-size) 0,
+    100% 0,
+    100% calc(100% - var(--dss-cut-size)),
+    calc(100% - var(--dss-cut-size)) 100%,
+    0 100%
+  );
+}
+
+.dss-cut-sm {
+  clip-path: polygon(
+    0 var(--dss-cut-sm),
+    var(--dss-cut-sm) 0,
+    100% 0,
+    100% calc(100% - var(--dss-cut-sm)),
+    calc(100% - var(--dss-cut-sm)) 100%,
+    0 100%
+  );
+}
+
+.dss-panel {
+  background-color: var(--dss-bg-panel);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border);
+}
+
+/* Applied to the focused pane only — the glow is the focus indicator. */
+.dss-glow {
+  box-shadow:
+    0 0 0 var(--dss-border-thickness) var(--dss-accent),
+    0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-accent);
+}
+
+/* Opt-in blur. Costly to composite, so it is never applied to pane bodies. */
+.dss-blur {
+  backdrop-filter: blur(var(--dss-backdrop-blur));
+}
+
+.dss-grid-bg {
+  --grid-size: 2.5rem;
+  background-image:
+    linear-gradient(to right, var(--dss-texture) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--dss-texture) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+
+.dss-label {
+  font-family: var(--dss-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: var(--dss-text-dim);
+}
+
+/* ==========================================================================
+   Controls
+   ========================================================================== */
+.dss-button {
+  font-family: var(--dss-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  padding: 0.35rem 0.85rem;
+  border: none;
+  cursor: pointer;
+  background-color: transparent;
+  color: var(--dss-accent);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-accent);
+  transition: all var(--dss-animation-speed) ease;
+  clip-path: polygon(
+    0 var(--dss-cut-sm),
+    var(--dss-cut-sm) 0,
+    100% 0,
+    100% calc(100% - var(--dss-cut-sm)),
+    calc(100% - var(--dss-cut-sm)) 100%,
+    0 100%
+  );
+}
+
+.dss-button:hover:not(:disabled) {
+  background-color: var(--dss-accent);
+  color: var(--dss-bg-app);
+  box-shadow: 0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-accent);
+}
+
+.dss-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(70%);
+}
+
+.dss-button--ghost {
+  color: var(--dss-text-dim);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border-soft);
+}
+
+.dss-button--ghost:hover:not(:disabled) {
+  color: var(--dss-text);
+  background-color: var(--dss-bg-surface);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border);
+}
+
+.dss-button--destructive {
+  color: var(--dss-destructive);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-destructive);
+}
+
+.dss-button--destructive:hover:not(:disabled) {
+  background-color: var(--dss-destructive);
+  color: var(--dss-bg-app);
+  box-shadow: 0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-destructive);
+}
+
+/* Icon-only chrome buttons: no chamfer, no glow, just a hover wash. */
+.dss-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--dss-text-dim);
+  cursor: pointer;
+  transition: all var(--dss-animation-speed) ease;
+}
+
+.dss-icon-button:hover:not(:disabled) {
+  color: var(--dss-accent);
+  background-color: var(--dss-bg-surface);
+}
+
+.dss-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dss-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--dss-font-mono);
+  font-size: 12px;
+  background-color: var(--dss-bg-input);
+  color: var(--dss-text);
+  border: var(--dss-border-thickness) solid var(--dss-border-soft);
+  outline: none;
+  transition: all var(--dss-animation-speed) ease;
+}
+
+.dss-input:focus {
+  border-color: var(--dss-accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--dss-accent) 55%, transparent);
+}
+
+.dss-input::placeholder {
+  color: var(--dss-text-faint);
+}
+
+select.dss-input {
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Scrollbars
+   ========================================================================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dss-border-soft);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dss-accent);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ==========================================================================
+   Terminal surface
+   ========================================================================== */
+.xterm {
+  padding: 6px 8px;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+  scrollbar-width: thin;
+}
+
+/* ==========================================================================
+   Motion
+   ========================================================================== */
+@keyframes dss-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.dss-pulse {
+  animation: dss-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
