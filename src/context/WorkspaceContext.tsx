@@ -1,0 +1,528 @@
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
+import { LayoutNode, PaneLeaf, SplitDirection, PluginDefinition } from "../types";
+
+interface WorkspaceSettings {
+  fontSize: number;
+  tabSize: number;
+  autosave: boolean;
+  showHidden: boolean;
+  theme: "slate" | "obsidian" | "cyberpunk" | "light";
+  rememberState: boolean;
+}
+
+interface WorkspaceContextProps {
+  layoutTree: LayoutNode | null;
+  setLayoutTree: React.Dispatch<React.SetStateAction<LayoutNode | null>>;
+  activePaneId: string | null;
+  setActivePaneId: (id: string | null) => void;
+  lastActiveEditorId: string | null;
+  setLastActiveEditorId: (id: string | null) => void;
+  plugins: Record<string, PluginDefinition>;
+  registerPlugin: (plugin: PluginDefinition) => void;
+  splitPane: (paneId: string, direction: SplitDirection, newPluginType: string, initialState?: any) => void;
+  closePane: (paneId: string) => void;
+  setPanePlugin: (paneId: string, pluginType: string) => void;
+  setPaneState: (paneId: string, state: any) => void;
+  updateSplitPercentage: (parentId: string, percentage: number) => void;
+  emitEvent: (name: string, payload: any) => void;
+  subscribeEvent: (name: string, handler: (payload: any) => void) => () => void;
+  resetLayout: () => void;
+  settings: WorkspaceSettings;
+  updateSettings: (newSettings: Partial<WorkspaceSettings>) => void;
+  panesRegistry: {
+    id: string;
+    pluginType: string;
+    isActive: boolean;
+    state: any;
+    historyCount: number;
+  }[];
+}
+
+const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(undefined);
+
+const DEFAULT_LAYOUT: LayoutNode = {
+  type: "split",
+  id: "split_root",
+  direction: "horizontal",
+  splitPercentage: 22,
+  left: {
+    type: "leaf",
+    id: "pane_explorer",
+    pluginType: "file-explorer",
+    state: {},
+  },
+  right: {
+    type: "leaf",
+    id: "pane_editor",
+    pluginType: "editor",
+    state: {},
+  },
+};
+
+const DEFAULT_SETTINGS: WorkspaceSettings = {
+  fontSize: 14,
+  tabSize: 2,
+  autosave: true,
+  showHidden: false,
+  theme: "slate",
+  rememberState: true,
+};
+
+export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [settings, setSettings] = useState<WorkspaceSettings>(() => {
+    try {
+      const saved = localStorage.getItem("dev_workspace_settings");
+      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+
+  const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(() => {
+    try {
+      const settingsSaved = localStorage.getItem("dev_workspace_settings");
+      const parsedSettings = settingsSaved ? JSON.parse(settingsSaved) : null;
+      const remember = parsedSettings ? parsedSettings.rememberState !== false : true;
+      if (!remember) return DEFAULT_LAYOUT;
+
+      const saved = localStorage.getItem("dev_workspace_layout");
+      return saved ? JSON.parse(saved) : DEFAULT_LAYOUT;
+    } catch {
+      return DEFAULT_LAYOUT;
+    }
+  });
+
+  const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const [lastActiveEditorId, setLastActiveEditorId] = useState<string | null>(null);
+  const [plugins, setPlugins] = useState<Record<string, PluginDefinition>>({});
+  const [panesRegistry, setPanesRegistry] = useState<{
+    id: string;
+    pluginType: string;
+    isActive: boolean;
+    state: any;
+    historyCount: number;
+  }[]>([]);
+  
+  const eventListeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
+
+  // Update panes registry on layoutTree or activePaneId modification
+  useEffect(() => {
+    const getLeaves = (node: LayoutNode | null): PaneLeaf[] => {
+      if (!node) return [];
+      if (node.type === "leaf") return [node];
+      return [...getLeaves(node.left), ...getLeaves(node.right)];
+    };
+    const leaves = getLeaves(layoutTree);
+    const registry = leaves.map((leaf) => ({
+      id: leaf.id,
+      pluginType: leaf.pluginType,
+      isActive: leaf.id === activePaneId,
+      state: leaf.state || {},
+      historyCount: leaf.history ? leaf.history.length : 0,
+    }));
+    setPanesRegistry(registry);
+  }, [layoutTree, activePaneId]);
+
+  // Save layout tree on modification if rememberState is enabled
+  useEffect(() => {
+    if (settings.rememberState && layoutTree) {
+      localStorage.setItem("dev_workspace_layout", JSON.stringify(layoutTree));
+    } else if (!settings.rememberState) {
+      localStorage.removeItem("dev_workspace_layout");
+    }
+  }, [layoutTree, settings.rememberState]);
+
+  // Save settings on modification and apply theme body class
+  useEffect(() => {
+    localStorage.setItem("dev_workspace_settings", JSON.stringify(settings));
+    
+    // Clean old theme classes
+    document.body.classList.remove("theme-slate", "theme-obsidian", "theme-cyberpunk", "theme-light");
+    // Add new theme class
+    const currentTheme = settings.theme || "slate";
+    document.body.classList.add(`theme-${currentTheme}`);
+  }, [settings]);
+
+  // Event Broadcasting Implementation
+  const emitEvent = useCallback((name: string, payload: any) => {
+    const listeners = eventListeners.current.get(name);
+    if (listeners) {
+      listeners.forEach((handler) => {
+        try {
+          handler(payload);
+        } catch (err) {
+          console.error(`Error broadcasting event '${name}':`, err);
+        }
+      });
+    }
+  }, []);
+
+  const subscribeEvent = useCallback((name: string, handler: (payload: any) => void) => {
+    if (!eventListeners.current.has(name)) {
+      eventListeners.current.set(name, new Set());
+    }
+    eventListeners.current.get(name)!.add(handler);
+    
+    return () => {
+      const listeners = eventListeners.current.get(name);
+      if (listeners) {
+        listeners.delete(handler);
+        if (listeners.size === 0) {
+          eventListeners.current.delete(name);
+        }
+      }
+    };
+  }, []);
+
+  const registerPlugin = useCallback((plugin: PluginDefinition) => {
+    setPlugins((prev) => ({ ...prev, [plugin.type]: plugin }));
+  }, []);
+
+  const updateSettings = useCallback((newSettings: Partial<WorkspaceSettings>) => {
+    setSettings((prev) => ({ ...prev, ...newSettings }));
+  }, []);
+
+  // Recursive Splitting Helper
+  const splitPane = useCallback((paneId: string, direction: SplitDirection, newPluginType: string, initialState?: any) => {
+    const splitLeafInTree = (node: LayoutNode): LayoutNode => {
+      if (node.type === "leaf") {
+        if (node.id === paneId) {
+          const randId = Math.random().toString(36).substring(2, 7);
+          const deepClone = (obj: any) => {
+            if (!obj) return obj;
+            return JSON.parse(JSON.stringify(obj));
+          };
+          const leftLeaf: PaneLeaf = {
+            type: "leaf",
+            id: node.id,
+            pluginType: node.pluginType,
+            state: deepClone(node.state),
+            history: deepClone(node.history),
+          };
+          const rightLeaf: PaneLeaf = {
+            type: "leaf",
+            id: `pane_${randId}`,
+            pluginType: newPluginType,
+            state: initialState ? deepClone(initialState) : deepClone(node.state),
+            history: deepClone(node.history),
+          };
+          return {
+            type: "split",
+            id: `split_${randId}`,
+            direction,
+            splitPercentage: 50,
+            left: leftLeaf,
+            right: rightLeaf,
+          };
+        }
+        return node;
+      } else {
+        return {
+          ...node,
+          left: splitLeafInTree(node.left),
+          right: splitLeafInTree(node.right),
+        };
+      }
+    };
+
+    setLayoutTree((prev) => {
+      if (!prev) {
+        return {
+          type: "leaf",
+          id: `pane_${Math.random().toString(36).substring(2, 7)}`,
+          pluginType: newPluginType,
+          state: {},
+        };
+      }
+      return splitLeafInTree(prev);
+    });
+  }, []);
+
+  // Recursive Close/Remove/Pop Helper
+  const closePane = useCallback((paneId: string) => {
+    const removeOrPopLeafFromTree = (node: LayoutNode): LayoutNode | null => {
+      if (node.type === "leaf") {
+        if (node.id === paneId) {
+          const history = node.history || [];
+          if (history.length > 0) {
+            const last = history[history.length - 1];
+            const remaining = history.slice(0, -1);
+            return {
+              ...node,
+              pluginType: last.pluginType,
+              state: last.state || {},
+              history: remaining,
+            };
+          }
+          return null; // Marks for removal
+        }
+        return node;
+      }
+      
+      const newLeft = removeOrPopLeafFromTree(node.left);
+      const newRight = removeOrPopLeafFromTree(node.right);
+      
+      if (newLeft === null) return newRight;
+      if (newRight === null) return newLeft;
+      
+      return {
+        ...node,
+        left: newLeft,
+        right: newRight,
+      };
+    };
+
+    setLayoutTree((prev) => {
+      if (!prev) return null;
+      return removeOrPopLeafFromTree(prev);
+    });
+  }, []);
+
+  const setPanePlugin = useCallback((paneId: string, pluginType: string) => {
+    const updateLeafPlugin = (node: LayoutNode): LayoutNode => {
+      if (node.type === "leaf") {
+        if (node.id === paneId) {
+          return { ...node, pluginType, state: {} };
+        }
+        return node;
+      }
+      return {
+        ...node,
+        left: updateLeafPlugin(node.left),
+        right: updateLeafPlugin(node.right),
+      };
+    };
+    setLayoutTree((prev) => {
+      if (!prev) return null;
+      return updateLeafPlugin(prev);
+    });
+  }, []);
+
+  const setPaneState = useCallback((paneId: string, state: any) => {
+    const updateLeafState = (node: LayoutNode): LayoutNode => {
+      if (node.type === "leaf") {
+        if (node.id === paneId) {
+          const currentState = node.state || {};
+          const isSame = Object.keys(state).every(
+            (k) => currentState[k] === state[k]
+          );
+          if (isSame) return node;
+          return { ...node, state: { ...currentState, ...state } };
+        }
+        return node;
+      }
+      
+      const left = updateLeafState(node.left);
+      const right = updateLeafState(node.right);
+      
+      if (left === node.left && right === node.right) {
+        return node;
+      }
+      
+      return {
+        ...node,
+        left,
+        right,
+      };
+    };
+    setLayoutTree((prev) => {
+      if (!prev) return null;
+      const updated = updateLeafState(prev);
+      return updated === prev ? prev : updated;
+    });
+  }, []);
+
+  const updateSplitPercentage = useCallback((parentId: string, percentage: number) => {
+    const updatePercentage = (node: LayoutNode): LayoutNode => {
+      if (node.type === "leaf") return node;
+      if (node.id === parentId) {
+        return {
+          ...node,
+          splitPercentage: Math.max(10, Math.min(90, percentage)),
+        };
+      }
+      return {
+        ...node,
+        left: updatePercentage(node.left),
+        right: updatePercentage(node.right),
+      };
+    };
+    setLayoutTree((prev) => {
+      if (!prev) return null;
+      return updatePercentage(prev);
+    });
+  }, []);
+
+  const resetLayout = useCallback(() => {
+    setLayoutTree(DEFAULT_LAYOUT);
+  }, []);
+
+  // Independent / Targeted File Opening to Specific Editor
+  useEffect(() => {
+    const handleOpenFileEvent = (payload: any) => {
+      if (!layoutTree) {
+        setLayoutTree({
+          type: "leaf",
+          id: "pane_editor_init",
+          pluginType: "editor",
+          state: { filePath: payload.path },
+        });
+        setActivePaneId("pane_editor_init");
+        setLastActiveEditorId("pane_editor_init");
+        return;
+      }
+
+      // Local helper to find node by ID
+      const findNodeById = (node: LayoutNode, id: string): PaneLeaf | null => {
+        if (node.type === "leaf") {
+          return node.id === id ? node : null;
+        }
+        return findNodeById(node.left, id) || findNodeById(node.right, id);
+      };
+
+      const convertPaneToEditor = (paneId: string, filePath: string) => {
+        setLayoutTree((prev) => {
+          if (!prev) return null;
+          const targetWithHistory = (node: LayoutNode): LayoutNode => {
+            if (node.type === "leaf") {
+              if (node.id === paneId) {
+                const currentHistory = node.history || [];
+                const updatedHistory = [...currentHistory, { pluginType: node.pluginType, state: node.state || {} }];
+                return {
+                  ...node,
+                  pluginType: "editor",
+                  state: { filePath },
+                  history: updatedHistory,
+                };
+              }
+              return node;
+            }
+            return {
+              ...node,
+              left: targetWithHistory(node.left),
+              right: targetWithHistory(node.right),
+            };
+          };
+          return targetWithHistory(prev);
+        });
+        setActivePaneId(paneId);
+        setLastActiveEditorId(paneId);
+      };
+
+      const sourcePaneId = payload.sourcePaneId;
+      const explicitTargetPaneId = payload.targetPaneId;
+
+      // Case A: Explicit target node specified (e.g. from context menu "Open in Node...")
+      if (explicitTargetPaneId) {
+        const targetNode = findNodeById(layoutTree, explicitTargetPaneId);
+        if (targetNode) {
+          if (targetNode.pluginType === "editor") {
+            setPaneState(explicitTargetPaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
+          } else {
+            convertPaneToEditor(explicitTargetPaneId, payload.path);
+          }
+          setActivePaneId(explicitTargetPaneId);
+          setLastActiveEditorId(explicitTargetPaneId);
+          return;
+        }
+      }
+
+      // Case B: Highlighted/Selected pane that is NOT a file explorer
+      if (activePaneId) {
+        const activeNode = findNodeById(layoutTree, activePaneId);
+        if (activeNode && activeNode.pluginType !== "file-explorer") {
+          if (activeNode.pluginType === "editor") {
+            setPaneState(activePaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
+          } else {
+            convertPaneToEditor(activePaneId, payload.path);
+          }
+          setActivePaneId(activePaneId);
+          setLastActiveEditorId(activePaneId);
+          return;
+        }
+      }
+
+      // Case C: No other valid pane highlighted/selected first -> Open in the source explorer pane ("same pane")
+      if (sourcePaneId) {
+        const sourceNode = findNodeById(layoutTree, sourcePaneId);
+        if (sourceNode) {
+          if (sourceNode.pluginType === "editor") {
+            setPaneState(sourcePaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
+          } else {
+            convertPaneToEditor(sourcePaneId, payload.path);
+          }
+          setActivePaneId(sourcePaneId);
+          setLastActiveEditorId(sourcePaneId);
+          return;
+        }
+      }
+
+      // Case D: Fallback to first available editor, or split if none
+      let targetPaneId: string | null = null;
+      if (lastActiveEditorId) {
+        const activeNode = findNodeById(layoutTree, lastActiveEditorId);
+        if (activeNode && activeNode.pluginType === "editor") {
+          targetPaneId = lastActiveEditorId;
+        }
+      }
+
+      if (!targetPaneId) {
+        const findFirstEditor = (node: LayoutNode): string | null => {
+          if (node.type === "leaf") {
+            return node.pluginType === "editor" ? node.id : null;
+          }
+          return findFirstEditor(node.left) || findFirstEditor(node.right);
+        };
+        targetPaneId = findFirstEditor(layoutTree);
+      }
+
+      if (targetPaneId) {
+        setPaneState(targetPaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
+        setActivePaneId(targetPaneId);
+        setLastActiveEditorId(targetPaneId);
+      } else {
+        const paneToSplit = activePaneId || "pane_explorer";
+        splitPane(paneToSplit, "horizontal", "editor", { filePath: payload.path });
+      }
+    };
+
+    const unsubscribe = subscribeEvent("open-file", handleOpenFileEvent);
+    return unsubscribe;
+  }, [layoutTree, activePaneId, lastActiveEditorId, subscribeEvent, setPanePlugin, splitPane, setPaneState]);
+
+  return (
+    <WorkspaceContext.Provider
+      value={{
+        layoutTree,
+        setLayoutTree,
+        activePaneId,
+        setActivePaneId,
+        lastActiveEditorId,
+        setLastActiveEditorId,
+        plugins,
+        registerPlugin,
+        splitPane,
+        closePane,
+        setPanePlugin,
+        setPaneState,
+        updateSplitPercentage,
+        emitEvent,
+        subscribeEvent,
+        resetLayout,
+        settings,
+        updateSettings,
+        panesRegistry,
+      }}
+    >
+      {children}
+    </WorkspaceContext.Provider>
+  );
+};
+
+export const useWorkspace = () => {
+  const context = useContext(WorkspaceContext);
+  if (context === undefined) {
+    throw new Error("useWorkspace must be used within a WorkspaceProvider");
+  }
+  return context;
+};
