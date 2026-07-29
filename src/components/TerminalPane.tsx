@@ -96,11 +96,16 @@ export const TerminalPane: React.FC<{
     const cols = Math.max(term.cols || 0, 20);
     const rows = Math.max(term.rows || 0, 5);
 
+    // cwdRef holds the directory the shell last reported, which survives a
+    // restart because only the effect re-runs, not the component. Falling back
+    // to the stored context covers a cold start.
+    const startCwd = cwdRef.current || state.terminalCwd || undefined;
+
     pty
       .spawn(
         {
           id: sessionId,
-          cwd: state.terminalCwd || undefined,
+          cwd: startCwd,
           cols,
           rows,
           shell,
@@ -356,8 +361,13 @@ export const TerminalPane: React.FC<{
   }, [workspace, paneId, sessionId]);
 
   const restart = useCallback(async () => {
-    termRef.current?.write("\r\n\x1b[33mrestarting shell…\x1b[0m\r\n");
+    const here = cwdRef.current;
+    termRef.current?.write(
+      `\r\n\x1b[33mrestarting shell${here ? ` in ${here}` : ""}…\x1b[0m\r\n`,
+    );
     await pty.kill(sessionId).catch(() => {});
+    // The remounted effect reads cwdRef, so the new shell opens where the old
+    // one was rather than back at the home directory.
     setGeneration((g) => g + 1);
   }, [sessionId]);
 
