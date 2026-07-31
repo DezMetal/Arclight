@@ -39,10 +39,49 @@ npm run build
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Launch with hot reload |
-| `npm run build` | Build the NSIS installer into `src-tauri/target/release/bundle` |
+| `npm run build` | Build the release binary and installer |
 | `npm run lint` | Typecheck the frontend |
 | `npm run test:rust` | Run the Rust unit tests |
 | `npm run icons` | Regenerate the icon set from `tools/generate_icons.py` |
+
+## Releasing
+
+The version number lives in **three** files that must agree — `package.json`,
+`src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`. If they drift, Windows
+treats two builds as the same product and an installer will silently upgrade
+over a different version. `tools/release.py` is the only thing that should set
+a version.
+
+```bash
+python3 tools/release.py --bump patch
+```
+
+| Invocation | Effect |
+| --- | --- |
+| `python3 tools/release.py` | Build at the current version |
+| `--bump patch` / `minor` / `major` | Bump all three files, then build |
+| `--set X.Y.Z` | Set explicitly, then build |
+| `--no-build` | Sync and verify versions without building |
+
+Artifacts are copied to `dist-release/` with versioned names:
+
+- `Arclight-<version>-portable.exe` — single file, run it anywhere, no install
+- `Arclight-<version>-setup.exe` — NSIS installer, adds Start Menu entry and uninstaller
+
+A release build takes roughly six minutes; LTO and `codegen-units = 1` are on
+deliberately, which is what keeps the binary near 4 MB.
+
+### Distribution notes
+
+Builds are **unsigned**. Windows SmartScreen will warn on a downloaded binary
+until either the certificate or the file itself accumulates reputation; users
+reach the app through *More info → Run anyway*. For a public repository,
+[SignPath](https://signpath.io/) grants free certificates to open-source
+projects, which removes the warning without cost.
+
+The installer uses Tauri's `downloadBootstrapper` mode for WebView2, so it
+fetches the runtime if the target machine lacks it. Windows 11 always has it;
+some Windows 10 machines do not and will need to be online during install.
 
 ## The workspace model
 
