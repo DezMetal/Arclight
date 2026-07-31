@@ -22,6 +22,5 @@ Thumbs.db
 *.log
 
 # Local tool state
-.claude/settings.local.json
 __pycache__/
 *.pyc
