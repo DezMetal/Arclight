@@ -1,0 +1,104 @@
+name: release
+
+# Builds the Windows binaries and publishes them to a GitHub Release.
+#
+# Triggered by pushing a version tag:
+#     python3 tools/release.py --bump patch --no-build
+#     git commit -am "Release 0.1.1" && git tag v0.1.1 && git push --follow-tags
+#
+# Runs on windows-latest because the app is Windows-first: ConPTY, drive
+# enumeration and the NSIS bundle all need a real Windows host.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # windows-latest ships a Rust toolchain, so only the build outputs and
+      # the registry are worth caching. Without this every release recompiles
+      # the whole Tauri dependency tree, which is most of the six minutes.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A tag that disagrees with the version in the source produces an
+      # installer Windows treats as a different build than its own filename
+      # claims. Fail before spending six minutes on it.
+      - name: Verify tag matches version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tag = $ref -replace '^v', ''
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $version) {
+            throw "tag '$tag' does not match tauri.conf.json version '$version' - run tools/release.py to resync"
+          }
+          Write-Output "building $version"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build
+        run: npm run build
+
+      - name: Collect artifacts
+        run: python tools/release.py --collect-only
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $notes = @"
+          ## Arclight $env:VERSION
+
+          | File | Use |
+          | --- | --- |
+          | ``Arclight-$env:VERSION-portable.exe`` | Single file. Run it anywhere, nothing installed. |
+          | ``Arclight-$env:VERSION-setup.exe`` | Installer. Start Menu entry and an uninstaller. |
+
+          Windows 10 or 11, 64-bit.
+
+          These builds are unsigned, so SmartScreen shows a warning on first run:
+          choose **More info**, then **Run anyway**.
+          "@
+          gh release create $tag (Get-Item dist-release/*.exe).FullName `
+            --title "Arclight $env:VERSION" `
+            --notes $notes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arclight-${{ env.VERSION }}
+          path: dist-release/*.exe
+          retention-days: 14

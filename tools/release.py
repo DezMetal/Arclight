@@ -145,6 +145,11 @@ def main() -> None:
     parser.add_argument(
         "--no-build", action="store_true", help="sync versions without building"
     )
+    parser.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="gather artifacts from an existing build without rebuilding",
+    )
     args = parser.parse_args()
 
     if args.explicit:
@@ -158,6 +163,10 @@ def main() -> None:
     print(f"Arclight {version}")
 
     if args.no_build:
+        return
+
+    if args.collect_only:
+        collect(version)
         return
 
     build()

@@ -399,7 +399,12 @@ fn scan_for_cwd(pending: &mut Vec<u8>, chunk: &[u8]) -> Option<String> {
                 found = Some(normalise_cwd(path));
             } else if let Some(rest) = text.strip_prefix("7;") {
                 if let Some(p) = rest.strip_prefix("file://") {
-                    let path = p.split_once('/').map(|(_, tail)| tail).unwrap_or(p);
+                    // After the hostname the path begins *at* the next slash,
+                    // not after it — dropping it turned /home/dev into home/dev.
+                    let path = match p.find('/') {
+                        Some(i) => &p[i..],
+                        None => p,
+                    };
                     found = Some(normalise_cwd(&percent_decode(path)));
                 }
             }

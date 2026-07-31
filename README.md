@@ -73,11 +73,15 @@ deliberately, which is what keeps the binary near 4 MB.
 
 ### Distribution notes
 
-Builds are **unsigned**. Windows SmartScreen will warn on a downloaded binary
-until either the certificate or the file itself accumulates reputation; users
-reach the app through *More info → Run anyway*. For a public repository,
+Builds are **unsigned**. Windows SmartScreen warns on a downloaded binary until
+either the signing certificate or the file itself accumulates reputation; users
+reach the app through *More info → Run anyway*. A locally built binary carries
+no Mark-of-the-Web and triggers nothing.
+
 [SignPath](https://signpath.io/) grants free certificates to open-source
-projects, which removes the warning without cost.
+projects and would remove the warning at no cost. A self-signed certificate
+does **not** help — SmartScreen does not trust an untrusted root, so it changes
+nothing.
 
 The installer uses Tauri's `downloadBootstrapper` mode for WebView2, so it
 fetches the runtime if the target machine lacks it. Windows 11 always has it;
@@ -205,4 +209,20 @@ in-process. There is no port to reach and nothing to authenticate.
 
 ## Licence
 
-Private. © D-Net Lab.
+[MIT](LICENSE) — © 2026 D-Net Lab.
+
+Use it, fork it, ship it commercially. The one condition is attribution: the
+copyright notice and licence text must travel with any copy or substantial
+portion of the source.
+
+### Name and branding
+
+The MIT licence covers the **code**, not the **name**. "Arclight" and "D-Net
+Lab", and the associated marks and logo, are not licensed with it.
+
+You may say your work is *derived from* or *based on* Arclight by D-Net Lab —
+that is the attribution the licence asks for. You may not name your fork or
+product in a way that suggests it is published, endorsed, or maintained by
+D-Net Lab, or otherwise present yourself as building under the D-Net Lab name.
+
+Credit, not affiliation.

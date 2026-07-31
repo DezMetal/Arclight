@@ -1,0 +1,53 @@
+name: ci
+
+# Correctness gate. Deliberately does not produce a bundle - that is the
+# release workflow's job, and a full build takes about six minutes. This only
+# checks that the tree compiles, typechecks and passes its tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: ci-cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ci-cargo-${{ runner.os }}-
+
+      - run: npm ci
+
+      - name: Typecheck frontend
+        run: npm run lint
+
+      - name: Check Rust
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Verify version files agree
+        run: python tools/release.py --no-build
