@@ -10,13 +10,9 @@ import type { ToolProps } from "../types";
 import { pty, errorText, type ShellOption } from "../lib/api";
 import { readTerminalTheme } from "../lib/terminalTheme";
 import { runCustomCommand, matchCustomCommand, COMMAND_PREFIX } from "../lib/customCommands";
+import { consumeChunk, initialState, ESC, CR, LF, BACKSPACE, CTRL_C } from "../lib/terminalInput";
 import { registerFrameHandler } from "../lib/frameBus";
 
-const ESC = String.fromCharCode(27);
-const CR = "\r";
-const LF = "\n";
-const BACKSPACE = String.fromCharCode(127);
-const CTRL_C = String.fromCharCode(3);
 /** Back up one column, overwrite with a space, back up again. */
 const ERASE = "\b \b";
 
@@ -137,36 +133,23 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
 
     // --- input -------------------------------------------------------------
     //
-    // A `dnet` line must never reach the shell, or cmd answers with "'dnet' is
-    // not recognized". We cannot know what a line is until enough of it is
-    // typed, so input at the start of a line is held while it could still
-    // become `dnet`, echoed locally so typing stays responsive. The moment it
-    // cannot be, the held characters are flushed and the rest of the line
-    // passes straight through. At most four characters are ever held, and only
-    // at the start of a line.
-    type Phase = "holding" | "passthrough" | "command";
-    let phase: Phase = "holding";
-    let held = "";
-    let line = "";
+    // Routing lives in lib/terminalInput.ts, which is pure and unit tested.
+    // Keeping it out of here is deliberate: this decision has been wrong twice
+    // and its symptom is misleading -- a leak surfaces as the shell reporting
+    // "'dnet' is not recognized", which reads like a PATH problem.
+    let inputState = initialState();
 
     const send = (text: string) => {
       void pty.write(sessionId, text).catch(() => setAlive(false));
     };
 
-    const flushHeld = (andThen: string) => {
-      if (held) term.write(ERASE.repeat(held.length));
-      const payload = held + andThen;
-      held = "";
-      phase = "passthrough";
-      if (payload) send(payload);
-    };
-
-    const execute = () => {
-      const matched = matchCustomCommand(line);
-      line = "";
-      held = "";
-      phase = "holding";
-      if (!matched) return;
+    const execute = (commandLine: string) => {
+      const matched = matchCustomCommand(commandLine);
+      if (!matched) {
+        // Not a command after all; hand it over rather than swallow it.
+        send(commandLine + CR);
+        return;
+      }
 
       term.write(CR + LF);
       void runCustomCommand(matched, {
@@ -174,106 +157,23 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
         frameId,
         sessionId,
         workspace: workspaceRef.current,
-        print: (text) => term.write(text.replace(/\r?\n/g, CR + LF)),
+        print: (text) => term.write(text.split("\n").join(CR + LF)),
       }).finally(() => {
         // The shell never saw the command, so nudge it to redraw its prompt.
         send(CR);
       });
     };
 
-    /** Feed exactly one character through the state machine. */
-    const consume = (ch: string) => {
-      if (phase === "command") {
-        if (ch === CR || ch === LF) {
-          execute();
-        } else if (ch === BACKSPACE) {
-          if (line.length > 0) {
-            line = line.slice(0, -1);
-            term.write(ERASE);
-          }
-          if (line.length === 0) phase = "holding";
-        } else if (ch === CTRL_C) {
-          term.write(`^C${CR}${LF}`);
-          line = "";
-          held = "";
-          phase = "holding";
-          send(CR);
-        } else if (ch >= " ") {
-          line += ch;
-          term.write(ch);
-        }
-        return;
-      }
-
-      if (phase === "passthrough") {
-        if (ch === CR || ch === LF) phase = "holding";
-        send(ch);
-        return;
-      }
-
-      // phase === "holding"
-      if (ch === CR || ch === LF) {
-        if (held === COMMAND_PREFIX) {
-          line = held;
-          execute();
-        } else {
-          flushHeld(ch);
-          phase = "holding";
-        }
-        return;
-      }
-
-      if (ch === BACKSPACE) {
-        if (held.length > 0) {
-          held = held.slice(0, -1);
-          term.write(ERASE);
-        } else {
-          send(ch);
-        }
-        return;
-      }
-
-      if (ch === CTRL_C) {
-        if (held) term.write(ERASE.repeat(held.length));
-        held = "";
-        phase = "passthrough";
-        send(ch);
-        return;
-      }
-
-      if (ch < " ") {
-        flushHeld(ch);
-        return;
-      }
-
-      const candidate = held + ch;
-      if (candidate.startsWith(COMMAND_PREFIX + " ")) {
-        phase = "command";
-        line = candidate;
-        held = "";
-        term.write(ch);
-      } else if (COMMAND_PREFIX.startsWith(candidate)) {
-        held = candidate;
-        term.write(ch);
-      } else {
-        flushHeld(ch);
-      }
-    };
-
     const dataSub = term.onData((data) => {
-      // An escape sequence is one indivisible unit and never a dnet line.
-      if (data.startsWith(ESC)) {
-        if (phase === "command") return; // arrows mid-command would corrupt it
-        flushHeld(data);
-        return;
-      }
+      const step = consumeChunk(inputState, data, COMMAND_PREFIX);
+      inputState = step.state;
 
-      // Everything else goes through character by character. xterm batches
-      // fast typing and pastes into a single onData call, so treating any
-      // multi-character payload as a paste sent "dn" straight to the shell the
-      // moment someone typed at speed - which is why `dnet` only ever worked
-      // when typed slowly.
-      for (const ch of data) consume(ch);
+      for (const fx of step.effects) {
+        if (fx.erase > 0) term.write(ERASE.repeat(fx.erase));
+        if (fx.echo) term.write(fx.echo);
+        if (fx.send) send(fx.send);
+        if (fx.execute !== undefined) execute(fx.execute);
+      }
     });
 
     const resizeSub = term.onResize(({ cols: c, rows: r }) => {

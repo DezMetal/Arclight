@@ -43,6 +43,9 @@ jobs:
       - name: Typecheck frontend
         run: npm run lint
 
+      - name: Terminal input router tests
+        run: node --experimental-strip-types tools/test_terminal_input.mjs
+
       - name: Check Rust
         run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 

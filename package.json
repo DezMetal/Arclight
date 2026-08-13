@@ -14,7 +14,8 @@
     "lint": "tsc --noEmit",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "icons": "python3 tools/generate_icons.py",
-    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test:input": "node --experimental-strip-types tools/test_terminal_input.mjs"
   },
   "dependencies": {
     "@codemirror/language-data": "^6.5.2",
