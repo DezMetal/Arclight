@@ -63,10 +63,15 @@ python3 tools/release.py --bump patch
 | `--set X.Y.Z` | Set explicitly, then build |
 | `--no-build` | Sync and verify versions without building |
 
-Artifacts are copied to `dist-release/` with versioned names:
+Artifacts are copied to `dist-release/` with versioned names, each beside a
+`.sha256` file:
 
 - `Arclight-<version>-portable.exe` — single file, run it anywhere, no install
 - `Arclight-<version>-setup.exe` — NSIS installer, adds Start Menu entry and uninstaller
+
+The installer is selected by matching the version in its filename. The bundle
+directory keeps every past build, so globbing for the newest could write an
+older installer out under the new version's name.
 
 A release build takes roughly six minutes; LTO and `codegen-units = 1` are on
 deliberately, which is what keeps the binary near 4 MB.

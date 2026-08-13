@@ -21,6 +21,7 @@ Artifacts land in:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -110,10 +111,32 @@ def build() -> None:
 
 
 def collect(version: str) -> None:
-    """Copy the shippable artifacts somewhere obvious and versioned."""
+    """Copy the shippable artifacts somewhere obvious and versioned.
+
+    The bundle directory accumulates installers from every previous build, so
+    the one for *this* version is selected by name. Globbing `*-setup.exe` and
+    copying whatever matched meant an older installer could be written out
+    under the new version's filename — an installer that lies about what it
+    contains, which is the exact failure the version check exists to prevent.
+    """
     release_dir = ROOT / "src-tauri" / "target" / "release"
     portable = release_dir / "arclight.exe"
-    installers = list((release_dir / "bundle" / "nsis").glob("*-setup.exe"))
+
+    nsis_dir = release_dir / "bundle" / "nsis"
+    wanted = f"_{version}_"
+    installers = [p for p in nsis_dir.glob("*-setup.exe") if wanted in p.name]
+
+    if not installers and nsis_dir.exists():
+        others = sorted(p.name for p in nsis_dir.glob("*-setup.exe"))
+        raise SystemExit(
+            f"no installer for {version} in {nsis_dir}\n"
+            + ("found instead: " + ", ".join(others) if others else "the directory is empty")
+        )
+    if len(installers) > 1:
+        raise SystemExit(
+            f"{len(installers)} installers match {version}: "
+            + ", ".join(p.name for p in installers)
+        )
 
     DIST.mkdir(exist_ok=True)
     collected = []
@@ -134,7 +157,13 @@ def collect(version: str) -> None:
     print(f"\nartifacts in {DIST}:")
     for path in collected:
         size = path.stat().st_size / 1_048_576
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
         print(f"  {path.name:<38} {size:6.1f} MB")
+        print(f"  {'':<38} sha256 {digest[:32]}...")
+        # A checksum file is the normal expectation for an unsigned download.
+        (path.with_suffix(path.suffix + ".sha256")).write_text(
+            f"{digest}  {path.name}\n", encoding="utf-8"
+        )
 
 
 def main() -> None:
