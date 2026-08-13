@@ -10,6 +10,7 @@ import type { ToolProps } from "../types";
 import { pty, errorText, type ShellOption } from "../lib/api";
 import { readTerminalTheme } from "../lib/terminalTheme";
 import { runCustomCommand, matchCustomCommand, COMMAND_PREFIX } from "../lib/customCommands";
+import { registerFrameHandler } from "../lib/frameBus";
 
 const ESC = String.fromCharCode(27);
 const CR = "\r";
@@ -68,6 +69,7 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
     if (!container) return;
 
     let disposed = false;
+    let attachment: number | undefined;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -109,7 +111,13 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
         if (!disposed) term.write(decoder.decode(bytes, { stream: true }));
       })
       .then((info) => {
-        if (disposed) return;
+        attachment = info.attachment;
+        // Unmounted while the spawn was in flight: release immediately, or the
+        // session keeps a sink pointing at a disposed terminal.
+        if (disposed) {
+          void pty.detach(sessionId, attachment);
+          return;
+        }
         setAlive(true);
         setCwd(info.cwd);
         requestAnimationFrame(() => {
@@ -288,7 +296,7 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
       resizeSub.dispose();
       // Detach, do not kill. The shell keeps running and keeps buffering;
       // remounting replays what it missed.
-      void pty.detach(sessionId);
+      void pty.detach(sessionId, attachment);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -370,6 +378,114 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
     const selection = termRef.current?.getSelection();
     if (selection) await navigator.clipboard.writeText(selection);
   }, []);
+
+  // --- control API surface -------------------------------------------------
+  //
+  // Reads the rendered screen rather than raw PTY bytes, so a caller sees what
+  // the user sees: escape sequences already applied, lines already wrapped.
+  useEffect(() => {
+    return registerFrameHandler(frameId, {
+      tool: "terminal",
+
+      read: (options) => {
+        const term = termRef.current;
+        if (!term) return { tool: "terminal", content: "", alive: false };
+
+        const buffer = term.buffer.active;
+        const includeScrollback = Boolean(options?.scrollback);
+        const requested = Number(options?.lines);
+
+        const end = buffer.baseY + term.rows;
+        let start = includeScrollback ? 0 : buffer.baseY;
+        if (Number.isFinite(requested) && requested > 0) {
+          start = Math.max(0, end - requested);
+        }
+
+        const lines: string[] = [];
+        for (let i = start; i < end; i += 1) {
+          // translateToString(true) trims the right padding xterm keeps for
+          // fixed-width cells, which would otherwise be a wall of spaces.
+          lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+        }
+
+        // Trailing blank lines are just unused rows, not content.
+        while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+
+        return {
+          tool: "terminal",
+          content: lines.join("\n"),
+          alive,
+          cwd: cwdRef.current,
+          shell,
+          cols: term.cols,
+          rows: term.rows,
+          cursor: { x: buffer.cursorX, y: buffer.cursorY },
+          selection: term.getSelection() || null,
+        };
+      },
+
+      write: async (action, payload) => {
+        const term = termRef.current;
+        switch (action) {
+          case "input":
+            // Raw bytes, exactly as typing would produce.
+            await pty.write(sessionId, String(payload.data ?? ""));
+            return { ok: true };
+
+          case "command": {
+            // A whole command line plus Enter, the common case for an agent.
+            const text = String(payload.command ?? "");
+            await pty.write(sessionId, text + CR);
+            return { ok: true };
+          }
+
+          case "key": {
+            // Named control points, so callers need not know byte values.
+            const keys: Record<string, string> = {
+              enter: CR,
+              tab: "\t",
+              backspace: BACKSPACE,
+              escape: ESC,
+              up: `${ESC}[A`,
+              down: `${ESC}[B`,
+              right: `${ESC}[C`,
+              left: `${ESC}[D`,
+              home: `${ESC}[H`,
+              end: `${ESC}[F`,
+              pageup: `${ESC}[5~`,
+              pagedown: `${ESC}[6~`,
+              delete: `${ESC}[3~`,
+              "ctrl-c": CTRL_C,
+              "ctrl-d": String.fromCharCode(4),
+              "ctrl-l": String.fromCharCode(12),
+              "ctrl-z": String.fromCharCode(26),
+            };
+            const name = String(payload.key ?? "").toLowerCase();
+            const seq = keys[name];
+            if (!seq) {
+              return { error: `unknown key '${name}'`, available: Object.keys(keys) };
+            }
+            await pty.write(sessionId, seq);
+            return { ok: true };
+          }
+
+          case "clear":
+            term?.clear();
+            return { ok: true };
+
+          case "restart":
+            await restart();
+            return { ok: true };
+
+          default:
+            return {
+              error: `unknown terminal action '${action}'`,
+              available: ["input", "command", "key", "clear", "restart"],
+            };
+        }
+      },
+    });
+  }, [frameId, sessionId, alive, shell, restart]);
 
   return (
     <div

@@ -20,6 +20,7 @@ import {
 import { useWorkspace } from "../context/WorkspaceContext";
 import type { ToolProps } from "../types";
 import { fs, paths, errorText, type DriveInfo, type FileEntry } from "../lib/api";
+import { registerFrameHandler } from "../lib/frameBus";
 
 interface MenuState {
   x: number;
@@ -213,6 +214,110 @@ export const FileExplorerPane: React.FC<ToolProps> = ({ frameId, context, setCon
       setError(errorText(err));
     }
   }, [clipboard, load]);
+
+  // --- control API surface -------------------------------------------------
+  //
+  // Returns the listing as structured data. `visible` is what the user is
+  // actually looking at, filter and hidden-file setting applied; `entries` is
+  // everything in the directory.
+  useEffect(() => {
+    return registerFrameHandler(frameId, {
+      tool: "file-explorer",
+
+      read: (options) => {
+        const shape = (list: FileEntry[]) =>
+          list.map((e) => ({
+            name: e.name,
+            path: e.path,
+            type: e.isDirectory ? "directory" : "file",
+            size: e.size,
+            modified: e.modified,
+            readonly: e.readonly,
+            symlink: e.isSymlink,
+          }));
+
+        const all = Boolean(options?.all);
+        return {
+          tool: "file-explorer",
+          content: path,
+          path,
+          parent,
+          filter,
+          selected,
+          data: shape(all ? entries : visible),
+          count: (all ? entries : visible).length,
+          error,
+        };
+      },
+
+      write: async (action, payload) => {
+        switch (action) {
+          case "navigate": {
+            const target = String(payload.path ?? "");
+            if (!target) return { error: "path is required" };
+            await load(paths.resolve(pathRef.current, target));
+            return { ok: true, path: pathRef.current };
+          }
+
+          case "up":
+            if (parent) await load(parent);
+            return { ok: true, path: parent ?? pathRef.current };
+
+          case "home":
+            await load(await fs.homeDir());
+            return { ok: true };
+
+          case "refresh":
+            await load(pathRef.current);
+            return { ok: true };
+
+          case "filter":
+            setFilter(String(payload.query ?? ""));
+            return { ok: true };
+
+          case "select":
+            setSelected(String(payload.path ?? "") || null);
+            return { ok: true };
+
+          case "open": {
+            const target = String(payload.path ?? "");
+            if (!target) return { error: "path is required" };
+            const entry = entries.find((e) => e.path === target || e.name === target);
+            if (!entry) return { error: `no entry '${target}' in ${pathRef.current}` };
+            openEntry(entry, {
+              frameId: payload.frameId ? String(payload.frameId) : undefined,
+              newFrame: payload.newFrame === true,
+            });
+            return { ok: true };
+          }
+
+          case "create": {
+            const kind = String(payload.kind ?? "file") === "dir" ? "dir" : "file";
+            const name = String(payload.name ?? "");
+            if (!name) return { error: "name is required" };
+            const created = await fs.create(paths.join(pathRef.current, name), kind);
+            await load(pathRef.current);
+            return { ok: true, path: created };
+          }
+
+          default:
+            return {
+              error: `unknown explorer action '${action}'`,
+              available: [
+                "navigate",
+                "up",
+                "home",
+                "refresh",
+                "filter",
+                "select",
+                "open",
+                "create",
+              ],
+            };
+        }
+      },
+    });
+  }, [frameId, path, parent, entries, visible, filter, selected, error, load, openEntry]);
 
   const breadcrumbs = useMemo(() => {
     if (!path) return [];

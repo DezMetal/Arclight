@@ -188,6 +188,8 @@ export interface SessionInfo {
   alive: boolean;
   shell: string;
   cwd: string;
+  /** Hand back to `detach` so a stale call cannot release a newer attachment. */
+  attachment: number;
 }
 
 export interface SpawnOptions {
@@ -225,9 +227,16 @@ export const pty = {
     return invoke<void>("pty_resize", { id, cols, rows });
   },
 
-  /** Stop receiving output without killing the shell. */
-  detach(id: string): Promise<void> {
-    return invoke<void>("pty_detach", { id });
+  /**
+   * Stop receiving output without killing the shell.
+   *
+   * Pass the `attachment` from `spawn`. Detach and spawn are independent async
+   * calls with no ordering guarantee, so on a remount a detach can arrive after
+   * the replacement has already attached; the token makes that a no-op rather
+   * than a silently blanked terminal.
+   */
+  detach(id: string, attachment?: number): Promise<void> {
+    return invoke<void>("pty_detach", { id, attachment: attachment ?? null });
   },
 
   kill(id: string): Promise<void> {

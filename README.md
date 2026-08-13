@@ -165,7 +165,8 @@ recognized`.
 | `dnet term [-h\|-v]` | New terminal frame at this directory |
 | `dnet explore [-h\|-v]` | New explorer frame at this directory |
 | `dnet reveal [path]` | Show in Windows Explorer |
-| `dnet theme <dnet\|arc\|light>` | Switch theme |
+| `dnet theme <dark\|light>` | Switch theme |
+| `dnet preset <signal\|aero\|softclub\|eink\|terminal>` | Switch the DSS preset |
 | `dnet font <size>` | Set interface font size |
 | `dnet new <file\|dir> <path>` | Create something |
 | `dnet frames` | List frames, their ids, and which is focused or targeted |
@@ -265,11 +266,50 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/frames
 | `/v1/frames/{id}/select` | POST | Make it the open target; `{id}` may be `none` |
 | `/v1/open` | POST | `{ path, frame_id?, new_frame?, direction? }` |
 | `/v1/command` | POST | `{ command }` — any `dnet` command, output returned |
+| `/v1/frames/{id}/content` | GET | **Read what is inside a frame** |
+| `/v1/frames/{id}/content` | POST | **Act on what is inside a frame** |
 | `/v1/terminal/{id}/write` | POST | `{ data }` — write to that frame's shell |
 | `/v1/events` | GET | Server-sent stream of workspace events |
 
 `/v1/command` runs the same `dnet` implementations the terminal exposes, so
 scripted and typed control share one code path rather than drifting apart.
+
+### Reading and writing frame contents
+
+This is the reason the API exists. Content is served by the **mounted tool**,
+not reconstructed from disk, so a caller sees exactly what is on screen —
+including an editor's unsaved buffer and a terminal's rendered output rather
+than raw PTY bytes.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8787/v1/frames/frame_editor/content"
+```
+
+**Reading** — `GET /v1/frames/{id}/content`
+
+| Tool | Returns |
+| --- | --- |
+| **Terminal** | `content`: the rendered screen. `?scrollback=true` for the whole buffer, `?lines=N` for the last N. Plus `cursor`, `cols`, `rows`, `cwd`, `shell`, `alive`, `selection`. |
+| **Editor** | `content`: the live buffer. Plus `filePath`, `dirty`, `lineCount`, `selection` with offsets and text. |
+| **Explorer** | `data`: array of `{ name, path, type, size, modified, readonly, symlink }`. `?all=true` ignores the filter and hidden-file setting. Plus `path`, `parent`, `selected`. |
+
+**Writing** — `POST /v1/frames/{id}/content` with `{ action, payload }`
+
+| Tool | Actions |
+| --- | --- |
+| **Terminal** | `input` `{data}` raw bytes · `command` `{command}` a line plus Enter · `key` `{key}` named control points (`enter`, `tab`, `up`, `ctrl-c`, `ctrl-d`, …) · `clear` · `restart` |
+| **Editor** | `setContent` `{content}` · `insert` `{text, at?}` · `replace` `{find, replace, all?}` · `find` `{query}` returning match offsets and lines · `save` · `open` `{path}` · `reload` |
+| **Explorer** | `navigate` `{path}` · `up` · `home` · `refresh` · `filter` `{query}` · `select` `{path}` · `open` `{path, frameId?, newFrame?}` · `create` `{kind, name}` |
+
+An unknown action returns the list of valid ones, so a caller can discover the
+surface without the docs:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"action\":\"?\"}" "http://127.0.0.1:8787/v1/frames/frame_terminal/content"
+```
+
+A frame must be **mounted** to be read or written — a frame whose tool is not
+currently showing returns `frame '<id>' is not mounted`.
 
 ### Architecture, and why there is no Node inside
 

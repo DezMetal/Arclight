@@ -4,6 +4,7 @@ import { useWorkspace } from "../context/WorkspaceContext";
 import { control, type ControlRequest } from "../lib/control";
 import { pty } from "../lib/api";
 import { matchCustomCommand, runCustomCommand } from "../lib/customCommands";
+import { readFrame, writeFrame } from "../lib/frameBus";
 
 /**
  * Connects the control API to the live workspace.
@@ -115,6 +116,32 @@ export const ControlBridge: React.FC = () => {
             }
             ws.selectFrame(target ?? null);
             return reply({ ok: true, selectedFrameId: target ?? null });
+          }
+
+          case "read": {
+            // The contents of a frame, from the mounted tool itself, so a
+            // caller sees exactly what is on screen - including an editor's
+            // unsaved buffer.
+            if (!ws.frames.some((f) => f.id === payload.frameId)) {
+              return reply({ error: `no frame '${payload.frameId}'` });
+            }
+            const result = await readFrame(payload.frameId, payload.options ?? {});
+            return reply({ ok: true, ...result });
+          }
+
+          case "write": {
+            if (!ws.frames.some((f) => f.id === payload.frameId)) {
+              return reply({ error: `no frame '${payload.frameId}'` });
+            }
+            if (!payload.action) return reply({ error: "action is required" });
+            const result = await writeFrame(
+              payload.frameId,
+              String(payload.action),
+              payload.payload ?? {},
+            );
+            return reply(
+              result && typeof result === "object" ? result : { ok: true, result },
+            );
           }
 
           case "terminalWrite": {

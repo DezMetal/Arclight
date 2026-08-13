@@ -27,7 +27,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -365,6 +365,75 @@ async fn run_command(
     Ok(bridged(result).into_response())
 }
 
+/// Read a frame's contents.
+///
+/// Served by the mounted tool, so the caller gets what is actually on screen:
+/// the editor's live buffer including unsaved edits, the terminal's rendered
+/// output rather than raw PTY bytes, the explorer's current listing.
+async fn read_frame(
+    State(ctx): State<ServerContext>,
+    headers: HeaderMap,
+    AxumPath(frame_id): AxumPath<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    authorize(&ctx, &headers)?;
+
+    // Query parameters become read options: ?scrollback=true&lines=200
+    // Booleans and integers are recognised so callers need not send JSON.
+    let mut map = serde_json::Map::new();
+    for (key, value) in params {
+        let parsed = match value.as_str() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            other => other
+                .parse::<i64>()
+                .map(Value::from)
+                .unwrap_or_else(|_| Value::String(other.to_string())),
+        };
+        map.insert(key, parsed);
+    }
+    let options = Value::Object(map);
+
+    let result = bridge(
+        &ctx,
+        "read",
+        json!({ "frameId": frame_id, "options": options }),
+    )
+    .await;
+    Ok(bridged(result).into_response())
+}
+
+#[derive(Deserialize)]
+struct FrameWriteBody {
+    /// Tool-specific action. Terminal: input, command, key, clear, restart.
+    /// Editor: setContent, insert, replace, find, save, open, reload.
+    /// Explorer: navigate, up, home, refresh, filter, select, open, create.
+    action: String,
+    #[serde(default)]
+    payload: Option<Value>,
+}
+
+/// Act on a frame's contents.
+async fn write_frame(
+    State(ctx): State<ServerContext>,
+    headers: HeaderMap,
+    AxumPath(frame_id): AxumPath<String>,
+    Json(body): Json<FrameWriteBody>,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    authorize(&ctx, &headers)?;
+    let result = bridge(
+        &ctx,
+        "write",
+        json!({
+            "frameId": frame_id,
+            "action": body.action,
+            "payload": body.payload.unwrap_or_else(|| json!({})),
+        }),
+    )
+    .await;
+    Ok(bridged(result).into_response())
+}
+
 #[derive(Deserialize)]
 struct WriteBody {
     data: String,
@@ -419,6 +488,7 @@ fn router(ctx: ServerContext) -> Router {
         .route("/v1/frames/{id}/tool", post(set_tool))
         .route("/v1/frames/{id}/close", post(close_frame))
         .route("/v1/frames/{id}/select", post(select_frame))
+        .route("/v1/frames/{id}/content", get(read_frame).post(write_frame))
         .route("/v1/open", post(open_file))
         .route("/v1/command", post(run_command))
         .route("/v1/terminal/{id}/write", post(terminal_write))

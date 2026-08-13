@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -39,14 +39,27 @@ pub struct PtySession {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     scrollback: Arc<Mutex<Vec<u8>>>,
     sink: DataSink,
+    /// Identifies the current attachment.
+    ///
+    /// A frame that remounts calls detach and spawn from two separate async
+    /// invokes, and they are not ordered. Without this, a stale detach could
+    /// land after the new spawn had already attached and silently clear the
+    /// sink -- leaving a live shell drawing into nothing, which is exactly
+    /// what "the terminal breaks after splitting" looked like.
+    attachment: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
     shell: String,
     cwd: Arc<Mutex<String>>,
 }
 
+type Sessions = Arc<Mutex<HashMap<String, Arc<PtySession>>>>;
+
 #[derive(Default)]
 pub struct PtyRegistry {
-    sessions: Mutex<HashMap<String, Arc<PtySession>>>,
+    /// Shared with each reader thread so a session can remove itself.
+    sessions: Sessions,
+    /// Source of attachment tokens, unique across every session.
+    next_attachment: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -55,6 +68,8 @@ pub struct SessionInfo {
     pub alive: bool,
     pub shell: String,
     pub cwd: String,
+    /// Pass back to `pty_detach` so only the current attachment is released.
+    pub attachment: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -197,11 +212,17 @@ pub fn pty_spawn(
 
     if let Some(session) = existing {
         if session.alive.load(Ordering::SeqCst) {
+            let token = registry.next_attachment.fetch_add(1, Ordering::SeqCst) + 1;
+
             let backlog = session.scrollback.lock().clone();
             if !backlog.is_empty() {
                 let _ = on_data.send(InvokeResponseBody::Raw(backlog));
             }
+            // Claim the attachment before installing the sink, so any detach
+            // still in flight for the previous attachment is a no-op.
+            session.attachment.store(token, Ordering::SeqCst);
             *session.sink.lock() = Some(on_data);
+
             let _ = session.master.lock().resize(PtySize {
                 rows,
                 cols,
@@ -213,6 +234,7 @@ pub fn pty_spawn(
                 alive: true,
                 shell: session.shell.clone(),
                 cwd: session.cwd.lock().clone(),
+                attachment: token,
             });
         }
     }
@@ -267,9 +289,12 @@ pub fn pty_spawn(
         .try_clone_reader()
         .map_err(|e| format!("try_clone_reader failed: {e}"))?;
 
+    let token = registry.next_attachment.fetch_add(1, Ordering::SeqCst) + 1;
+
     let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
     let sink: DataSink = Arc::new(Mutex::new(Some(on_data)));
     let alive = Arc::new(AtomicBool::new(true));
+    let attachment = Arc::new(AtomicU64::new(token));
     let session_cwd = Arc::new(Mutex::new(
         start_dir.clone().unwrap_or_else(|| ".".to_string()),
     ));
@@ -280,18 +305,31 @@ pub fn pty_spawn(
         killer: Mutex::new(killer),
         scrollback: scrollback.clone(),
         sink: sink.clone(),
+        attachment,
         alive: alive.clone(),
         shell: shell_id.clone(),
         cwd: session_cwd.clone(),
     });
 
-    registry.sessions.lock().insert(id.clone(), session);
+    registry.sessions.lock().insert(id.clone(), session.clone());
 
     // Reader thread. Owns the session's output for as long as the shell lives,
-    // independent of whether any pane is currently attached.
+    // independent of whether any frame is currently attached.
+    //
+    // It also owns *removal*. Dropping the session closes the PTY, and this
+    // thread is blocked reading that handle, so removing the session from the
+    // registry anywhere else frees the handle out from under a live read --
+    // which crashed the app on terminal restart. Only this thread knows when
+    // reading has actually finished.
     {
         let id = id.clone();
         let app = app.clone();
+        let sessions = registry.sessions.clone();
+        // Moved into the thread so the session — and therefore the PTY handle
+        // this thread is reading — cannot be dropped by a replacement being
+        // inserted under the same id. There is no reference cycle: the session
+        // does not hold the thread.
+        let owned = session.clone();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; READ_CHUNK];
             let mut osc_pending = Vec::<u8>::new();
@@ -345,6 +383,19 @@ pub fn pty_spawn(
             }
 
             alive.store(false, Ordering::SeqCst);
+
+            // Safe now: reading has stopped, so releasing the PTY handle cannot
+            // pull the ground out from under a read. Only evict our own entry —
+            // a restart may already have installed a replacement under this id.
+            {
+                let mut map = sessions.lock();
+                let ours = map.get(&id).map(|s| Arc::ptr_eq(s, &owned)).unwrap_or(false);
+                if ours {
+                    map.remove(&id);
+                }
+            }
+            drop(owned);
+
             let _ = app.emit("pty:exit", ExitEvent { id: id.clone() });
         });
     }
@@ -354,6 +405,7 @@ pub fn pty_spawn(
         alive: true,
         shell: shell_id,
         cwd: start_dir.unwrap_or_else(|| ".".into()),
+        attachment: token,
     })
 }
 
@@ -516,21 +568,37 @@ pub fn pty_resize(
     result.map_err(|e| format!("resize failed: {e}"))
 }
 
-/// Detach the current pane without killing the shell.
+/// Detach a frame without killing the shell.
 ///
-/// This is what a pane calls on unmount. The session keeps running and keeps
-/// filling scrollback; the next `pty_spawn` with the same id reattaches.
+/// Called on unmount. The session keeps running and keeps filling scrollback;
+/// the next `pty_spawn` with the same id reattaches.
+///
+/// `attachment` is the token that `pty_spawn` returned. A frame that remounts
+/// issues detach and spawn as two independent async calls with no ordering
+/// guarantee, so a detach can arrive *after* the replacement has attached.
+/// Releasing only a matching token makes that late detach a no-op instead of
+/// silently blanking a working terminal.
 #[tauri::command]
-pub fn pty_detach(registry: State<'_, PtyRegistry>, id: String) {
-    let sessions = registry.sessions.lock();
-    if let Some(session) = sessions.get(&id) {
-        *session.sink.lock() = None;
+pub fn pty_detach(registry: State<'_, PtyRegistry>, id: String, attachment: Option<u64>) {
+    let session = registry.sessions.lock().get(&id).cloned();
+    let Some(session) = session else { return };
+
+    if let Some(token) = attachment {
+        if session.attachment.load(Ordering::SeqCst) != token {
+            return; // superseded by a newer attachment
+        }
     }
+    *session.sink.lock() = None;
 }
 
+/// Kill the shell.
+///
+/// Deliberately does *not* remove the session from the registry: the reader
+/// thread is blocked on the PTY handle, and dropping the session here would
+/// free that handle mid-read. The reader removes itself once reading stops.
 #[tauri::command]
 pub fn pty_kill(registry: State<'_, PtyRegistry>, id: String) -> Result<(), String> {
-    let session = registry.sessions.lock().remove(&id);
+    let session = registry.sessions.lock().get(&id).cloned();
     match session {
         Some(session) => {
             *session.sink.lock() = None;
@@ -553,6 +621,7 @@ pub fn pty_list(registry: State<'_, PtyRegistry>) -> Vec<SessionInfo> {
             alive: s.alive.load(Ordering::SeqCst),
             shell: s.shell.clone(),
             cwd: s.cwd.lock().clone(),
+            attachment: s.attachment.load(Ordering::SeqCst),
         })
         .collect()
 }

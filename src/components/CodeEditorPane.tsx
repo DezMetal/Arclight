@@ -7,6 +7,7 @@ import { useWorkspace } from "../context/WorkspaceContext";
 import type { ToolProps } from "../types";
 import { fs, paths, errorText } from "../lib/api";
 import { useCodeMirrorTheme } from "../lib/editorTheme";
+import { registerFrameHandler } from "../lib/frameBus";
 
 /**
  * File editor backed by CodeMirror 6.
@@ -15,7 +16,7 @@ import { useCodeMirrorTheme } from "../lib/editorTheme";
  * multi-cursor, no folding, and hand-written bracket/indent handling that
  * CodeMirror does properly.
  */
-export const CodeEditorPane: React.FC<ToolProps> = ({ context, setContext }) => {
+export const CodeEditorPane: React.FC<ToolProps> = ({ frameId, context, setContext }) => {
   const { settings } = useWorkspace();
 
   const [filePath, setFilePath] = useState(context.filePath ?? "");
@@ -131,6 +132,105 @@ export const CodeEditorPane: React.FC<ToolProps> = ({ context, setContext }) => 
     },
     [save],
   );
+
+  // --- control API surface -------------------------------------------------
+  //
+  // Reads the *live buffer*, not the file on disk, so an agent sees unsaved
+  // work exactly as the user does.
+  useEffect(() => {
+    return registerFrameHandler(frameId, {
+      tool: "editor",
+
+      read: () => {
+        const view = editorRef.current?.view;
+        const selection = view?.state.selection.main;
+        return {
+          tool: "editor",
+          content,
+          filePath,
+          dirty,
+          lineCount: content.length ? content.split("\n").length : 0,
+          selection: selection
+            ? {
+                from: selection.from,
+                to: selection.to,
+                text: content.slice(selection.from, selection.to),
+              }
+            : null,
+          error,
+        };
+      },
+
+      write: async (action, payload) => {
+        const view = editorRef.current?.view;
+
+        switch (action) {
+          case "setContent":
+            setContent(String(payload.content ?? ""));
+            return { ok: true };
+
+          case "insert": {
+            const text = String(payload.text ?? "");
+            const at = Number.isFinite(Number(payload.at))
+              ? Number(payload.at)
+              : (view?.state.selection.main.head ?? content.length);
+            const clamped = Math.max(0, Math.min(at, content.length));
+            setContent(content.slice(0, clamped) + text + content.slice(clamped));
+            return { ok: true, at: clamped };
+          }
+
+          case "replace": {
+            const find = String(payload.find ?? "");
+            if (!find) return { error: "find is required" };
+            const replacement = String(payload.replace ?? "");
+            const all = payload.all !== false;
+            if (!content.includes(find)) return { ok: true, replaced: 0 };
+            const replaced = all ? content.split(find).length - 1 : 1;
+            setContent(all ? content.split(find).join(replacement) : content.replace(find, replacement));
+            return { ok: true, replaced };
+          }
+
+          case "find": {
+            const needle = String(payload.query ?? "");
+            if (!needle) return { error: "query is required" };
+            const matches: { index: number; line: number }[] = [];
+            let from = 0;
+            for (;;) {
+              const index = content.indexOf(needle, from);
+              if (index === -1) break;
+              matches.push({
+                index,
+                line: content.slice(0, index).split("\n").length,
+              });
+              from = index + needle.length;
+            }
+            return { ok: true, matches, count: matches.length };
+          }
+
+          case "save":
+            await save();
+            return { ok: true, filePath };
+
+          case "open": {
+            const target = String(payload.path ?? "");
+            if (!target) return { error: "path is required" };
+            await open(target);
+            return { ok: true, filePath: target };
+          }
+
+          case "reload":
+            if (filePath) await open(filePath);
+            return { ok: true };
+
+          default:
+            return {
+              error: `unknown editor action '${action}'`,
+              available: ["setContent", "insert", "replace", "find", "save", "open", "reload"],
+            };
+        }
+      },
+    });
+  }, [frameId, content, filePath, dirty, error, save, open]);
 
   const basicSetup = useMemo(
     () => ({
