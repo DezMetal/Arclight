@@ -187,28 +187,33 @@ pub fn pty_spawn(
     } = options;
 
     // Reattach path: session already exists and has not exited.
-    {
-        let sessions = registry.sessions.lock();
-        if let Some(existing) = sessions.get(&id) {
-            if existing.alive.load(Ordering::SeqCst) {
-                let backlog = existing.scrollback.lock().clone();
-                if !backlog.is_empty() {
-                    let _ = on_data.send(InvokeResponseBody::Raw(backlog));
-                }
-                *existing.sink.lock() = Some(on_data);
-                let _ = existing.master.lock().resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-                return Ok(SessionInfo {
-                    id: id.clone(),
-                    alive: true,
-                    shell: existing.shell.clone(),
-                    cwd: existing.cwd.lock().clone(),
-                });
+    //
+    // The registry lock is released before touching the session, because the
+    // reader thread can be inside `sink.send` at this moment. Holding
+    // `sessions` while waiting on `sink` meant one blocked send froze every
+    // other PTY command -- which is why opening a second terminal, or
+    // switching a frame's tool, appeared to kill the first terminal.
+    let existing = registry.sessions.lock().get(&id).cloned();
+
+    if let Some(session) = existing {
+        if session.alive.load(Ordering::SeqCst) {
+            let backlog = session.scrollback.lock().clone();
+            if !backlog.is_empty() {
+                let _ = on_data.send(InvokeResponseBody::Raw(backlog));
             }
+            *session.sink.lock() = Some(on_data);
+            let _ = session.master.lock().resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+            return Ok(SessionInfo {
+                id: id.clone(),
+                alive: true,
+                shell: session.shell.clone(),
+                cwd: session.cwd.lock().clone(),
+            });
         }
     }
 
@@ -327,8 +332,11 @@ pub fn pty_spawn(
                             }
                         }
 
-                        let guard = sink.lock();
-                        if let Some(channel) = guard.as_ref() {
+                        // Clone the channel out before sending. Sending while
+                        // holding the lock lets a slow IPC write block every
+                        // command that needs this session.
+                        let target = sink.lock().clone();
+                        if let Some(channel) = target {
                             let _ = channel.send(InvokeResponseBody::Raw(chunk.to_vec()));
                         }
                     }

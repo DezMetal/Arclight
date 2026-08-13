@@ -1,0 +1,579 @@
+/* GENERATED COPY — do not edit. Source: /test/DSS. Run `python sync.py`. */
+/* ═══════════════════════════════════════════════════════════════
+   DSS — D-Net Signature Stylesheet
+   v8.1.0 · "Signal Glass" · presets
+   D-Net Lab · From Mind To Matter
+
+   The house design system. One dependency-free CSS file shared by
+   every D-Net Lab property (lab.dnet.live, D-Net LIVE, Virago).
+
+   Identity:
+     Outfit + JetBrains Mono · icy cyan/periwinkle glow · misty
+     translucent glass · large diagonal corner cuts · dark-first.
+
+   Accent family is COOL ONLY — cyan, periwinkle, indigo, mint.
+   Never orange, never warm.
+
+   Everything is driven by custom properties. Override the tokens,
+   not the selectors.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ─────────────────────────────────────────────────── */
+:root {
+  /* Type */
+  --dss-font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --dss-font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, Menlo, monospace;
+  --dss-font-display: var(--dss-font-sans);
+
+  /* Accent family */
+  --dss-cyan:   #00e0ff;
+  --dss-peri:   #9fbffe;
+  --dss-indigo: #667eea;
+  --dss-mint:   #7ef0d0;
+  --dss-iri: linear-gradient(100deg,
+              var(--dss-cyan) 0%, var(--dss-peri) 45%,
+              var(--dss-indigo) 78%, var(--dss-mint) 100%);
+
+  /* Geometry */
+  --dss-cut: 26px;
+  --dss-notch: polygon(
+    0 var(--dss-cut), var(--dss-cut) 0,
+    100% 0, 100% calc(100% - var(--dss-cut)),
+    calc(100% - var(--dss-cut)) 100%, 0 100%
+  );
+  --dss-radius: 4px;
+
+  /* Motion */
+  --dss-speed: 0.3s;
+  --dss-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Glass — one place to tune the whole effect */
+  --dss-blur: 2.5px;
+  --dss-glass: blur(var(--dss-blur)) saturate(1.35) brightness(1.06);
+  --dss-glass-deep: blur(calc(var(--dss-blur) * 1.8)) saturate(1.6) brightness(1.14);
+
+  /* Layout */
+  --dss-container: 1400px;
+  --dss-measure: 78ch;
+}
+
+/* ── Dark — the house default ───────────────────────────────── */
+:root,
+:root[data-theme="dark"] {
+  --dss-bg:          #0a0c10;
+  --dss-bg-deep:     #05070a;
+
+  /* Misty glass. Two rules make this read as GLASS rather than as a
+     dark panel:
+       1. The tint must be LIGHTER AND COOLER than the page behind it
+          (here #0a0c10). A tint the same colour as the backdrop just
+          reads as a hole, and blurring it achieves nothing.
+       2. It must be mostly TRANSPARENT (~0.30), so the grid field and
+          the colour halos genuinely show through, diffused by blur.
+          At 0.55 the grid stopped dead at every card edge.
+     The sheen stays LOW-CONTRAST — a steep gradient exposes the seam
+     between the rectangular backdrop-filter region and the notched
+     clip-path as a phantom inner border. */
+  --dss-surface-tint:  rgba(138, 176, 224, 0.13);
+  --dss-surface-sheen: linear-gradient(160deg,
+                        rgba(185,215,250,0.11) 0%,
+                        rgba(160,195,240,0.05) 55%,
+                        rgba(190,220,252,0.09) 100%);
+  --dss-surface-solid: #161b22;
+
+  --dss-ink:        #ffffff;
+  --dss-ink-soft:   #b9c2cc;
+  --dss-ink-faint:  #a3adb8;
+
+  --dss-accent:     var(--dss-cyan);
+  --dss-accent-ink: #7fe9ff;
+  --dss-accent-weak: rgba(0, 224, 255, 0.10);
+
+  --dss-rule:        rgba(168, 209, 255, 0.24);
+  --dss-rule-strong: rgba(168, 209, 255, 0.55);
+  --dss-rule-soft:   rgba(168, 209, 255, 0.22);
+
+  --dss-gloss: rgba(255, 255, 255, 0.14);
+  --dss-glow:        drop-shadow(0 0 16px rgba(0, 224, 255, 0.14));
+  --dss-glow-strong: drop-shadow(0 0 26px rgba(0, 224, 255, 0.32));
+
+  --dss-halo-1: rgba(0, 224, 255, 0.10);
+  --dss-halo-2: rgba(102, 126, 234, 0.10);
+  --dss-neb-1: rgba(0, 176, 224, 0.17);
+  --dss-neb-2: rgba(88, 108, 224, 0.18);
+  --dss-neb-3: rgba(120, 90, 200, 0.14);
+
+  --dss-success: #35d39a;
+  --dss-warning: #ffd479;
+  --dss-error:   #ff6b6b;
+}
+
+/* ── Light — icy, never grey mud ────────────────────────────── */
+:root[data-theme="light"] {
+  --dss-bg:          #eaf1f7;
+  --dss-bg-deep:     #dbe6f0;
+
+  --dss-surface-tint:  rgba(234, 243, 252, 0.34);
+  --dss-surface-sheen: linear-gradient(160deg,
+                        rgba(255,255,255,0.46) 0%,
+                        rgba(224,240,255,0.22) 55%,
+                        rgba(255,255,255,0.40) 100%);
+  --dss-surface-solid: #f6fafd;
+
+  --dss-ink:        #06131c;
+  --dss-ink-soft:   #2f4250;
+  --dss-ink-faint:  #556a7a;
+
+  --dss-accent:     #0072a3;
+  --dss-accent-ink: #005b83;
+  --dss-accent-weak: rgba(0, 114, 163, 0.12);
+
+  --dss-rule:        rgba(6, 60, 92, 0.24);
+  --dss-rule-strong: rgba(6, 60, 92, 0.50);
+  --dss-rule-soft:   rgba(6, 60, 92, 0.20);
+
+  --dss-gloss: rgba(255, 255, 255, 0.96);
+  --dss-glow:        drop-shadow(0 0 14px rgba(0, 132, 190, 0.16));
+  --dss-glow-strong: drop-shadow(0 0 24px rgba(0, 132, 190, 0.30));
+
+  --dss-halo-1: rgba(0, 176, 224, 0.14);
+  --dss-halo-2: rgba(102, 126, 234, 0.10);
+  --dss-neb-1: rgba(0, 176, 224, 0.20);
+  --dss-neb-2: rgba(120, 150, 255, 0.22);
+  --dss-neb-3: rgba(160, 130, 235, 0.16);
+
+  --dss-success: #1b7a53;
+  --dss-warning: #8a5a00;
+  --dss-error:   #b32020;
+}
+
+/* ── Base ───────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  overflow-x: clip;
+  background: var(--dss-bg);
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  overflow-x: clip;
+  font-family: var(--dss-font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--dss-ink-soft);
+  background: var(--dss-bg);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--dss-speed) var(--dss-ease),
+              color var(--dss-speed) var(--dss-ease);
+}
+
+img, svg, video { max-width: 100%; height: auto; display: block; }
+
+a { color: var(--dss-accent-ink); text-decoration: underline; text-underline-offset: 3px; font-weight: 500; }
+a:hover { color: var(--dss-accent); text-shadow: 0 0 10px var(--dss-accent-weak); }
+
+::selection { background: var(--dss-accent); color: #04121a; }
+:focus-visible { outline: 2px solid var(--dss-accent); outline-offset: 3px; }
+
+/* ── Backdrop: grid field + colour halos ────────────────────────
+   NOTE: do not add a position:fixed full-viewport texture overlay
+   on top of this. It must recomposite every scroll frame and can
+   freeze the renderer outright. The grid and halos scroll with the
+   page and cost nothing.                                          */
+.dss-bg-grid {
+  background-image:
+    /* A NEBULA FIELD, not a flat colour. The nav reads as glass because real
+       page content passes behind it; cards sit over the page background, so
+       that background has to be worth looking at or the blur just averages
+       emptiness into grey. These large, saturated, overlapping washes give
+       every card something to refract. */
+    radial-gradient(ellipse 900px 620px at 10%  2%,  var(--dss-neb-1), transparent 62%),
+    radial-gradient(ellipse 820px 580px at 88% 14%,  var(--dss-neb-2), transparent 62%),
+    radial-gradient(ellipse 960px 660px at 26% 46%,  var(--dss-neb-3), transparent 64%),
+    radial-gradient(ellipse 880px 620px at 82% 62%,  var(--dss-neb-2), transparent 62%),
+    radial-gradient(ellipse 920px 640px at 14% 88%,  var(--dss-neb-1), transparent 62%),
+    radial-gradient(ellipse 840px 600px at 76% 96%,  var(--dss-neb-3), transparent 62%),
+    linear-gradient(var(--dss-rule-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--dss-rule-soft) 1px, transparent 1px);
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%,
+    38px 38px, 38px 38px;
+}
+
+/* ── Layout ─────────────────────────────────────────────────── */
+.dss-container {
+  width: 100%;
+  max-width: var(--dss-container);
+  margin: 0 auto;
+  padding: 0 1.6rem;
+}
+.dss-container--narrow { max-width: 860px; }
+
+/* ── Typography ─────────────────────────────────────────────── */
+.dss-display {
+  font-family: var(--dss-font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.06;
+  color: var(--dss-ink);
+  text-shadow: 0 0 34px var(--dss-accent-weak);
+}
+
+.dss-label {
+  font-family: var(--dss-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dss-ink);
+}
+
+.dss-eyebrow {
+  font-family: var(--dss-font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--dss-accent-ink);
+}
+
+/* Iridescent rule, for under section headings */
+.dss-rule-iri {
+  display: block;
+  height: 1.5px;
+  background: var(--dss-iri);
+  box-shadow: 0 0 12px rgba(0, 224, 255, 0.45);
+}
+
+/* ── Card — misty glass ─────────────────────────────────────────
+   background-color carries the tint, background-image the sheen.
+   Keep the sheen low-contrast: a steep gradient reveals the seam
+   between the (rectangular) backdrop-filter region and the notched
+   clip-path, which reads as a phantom inner border.
+
+   clip-path also clips box-shadow away entirely, so any OUTER glow
+   must be a filter: drop-shadow(), which follows the clipped shape.
+   Inset shadows still work, since they paint inside the clip.      */
+.dss-card {
+  position: relative;
+  z-index: 0;
+  clip-path: var(--dss-notch);
+  border: 1.4px solid var(--dss-rule);
+  padding: 1.35rem 1.45rem;
+  background-color: var(--dss-surface-tint);
+  background-image: var(--dss-surface-sheen);
+  -webkit-backdrop-filter: var(--dss-glass);
+  backdrop-filter: var(--dss-glass);
+  box-shadow: inset 0 1px 0 var(--dss-gloss),
+              inset 0 -1px 0 rgba(255,255,255,0.05);
+  transition: transform var(--dss-speed) var(--dss-ease),
+              border-color var(--dss-speed) var(--dss-ease);
+}
+
+
+/* Heavier frost for hero surfaces. Each blurred element is its own
+   compositing layer, so --blur is kept moderate on the base card and
+   only these few go deeper. */
+.dss-card--glass {
+  -webkit-backdrop-filter: var(--dss-glass-deep);
+  backdrop-filter: var(--dss-glass-deep);
+}
+
+/* Opt out where blur is not wanted (long text panels, print). */
+.dss-card--solid {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: var(--dss-surface-solid);
+}
+
+/* Glow must NEVER be a `filter` on a card: `filter` turns the element into
+   its own backdrop root, which silently disables its `backdrop-filter` and
+   makes the glass render opaque. It lives on a pseudo-element behind the
+   card instead — no clip-path there, so the bloom is not cut away either. */
+.dss-card--glow::after,
+.dss-card--interactive::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  z-index: -1;
+  border-radius: 2px;
+  box-shadow: 0 0 22px 2px var(--dss-accent-weak);
+  opacity: 0.9;
+  pointer-events: none;
+  transition: box-shadow var(--dss-speed) var(--dss-ease);
+}
+.dss-card--interactive:hover::after { box-shadow: 0 0 34px 6px var(--dss-accent-weak); }
+
+.dss-card--interactive { display: block; text-decoration: none; color: inherit; cursor: pointer; }
+.dss-card--interactive:hover {
+  transform: translateY(-3px);
+  border-color: var(--dss-rule-strong);
+}
+
+/* Corner notch — only for surfaces that do NOT need working glass, since
+   clip-path and backdrop-filter cannot coexist on one element. */
+.dss-card--notch {
+  clip-path: var(--dss-notch);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: var(--dss-surface-solid);
+}
+.dss-card--flat { clip-path: none; }
+
+/* ── Bars — headers, footers, toolbars ──────────────────────────
+   Same glass as .dss-card, without the notch. Use for any full-width
+   chrome surface so the whole frame reads as one material.          */
+.dss-bar {
+  background-color: var(--dss-surface-tint);
+  background-image: var(--dss-surface-sheen);
+  -webkit-backdrop-filter: var(--dss-glass);
+  backdrop-filter: var(--dss-glass);
+  box-shadow: inset 0 1px 0 var(--dss-gloss);
+}
+.dss-bar--top    { border-bottom: 1.4px solid var(--dss-rule); position: sticky; top: 0; z-index: 50; }
+.dss-bar--bottom { border-top: 1.4px solid var(--dss-rule); }
+
+/* ── Buttons ────────────────────────────────────────────────── */
+.dss-button {
+  position: relative;
+  z-index: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.68rem 1.35rem;
+  font-family: var(--dss-font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  color: var(--dss-ink);
+  background: var(--dss-surface-solid);
+  border: 1.4px solid var(--dss-rule-strong);
+  border-radius: var(--dss-radius);
+  box-shadow: inset 0 1px 0 var(--dss-gloss);
+  filter: var(--dss-glow);
+  cursor: pointer;
+  overflow: hidden;
+  transition: all var(--dss-speed) var(--dss-ease);
+}
+.dss-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--dss-iri);
+  opacity: 0;
+  transition: opacity var(--dss-speed) var(--dss-ease);
+}
+.dss-button:hover {
+  transform: translateY(-2px);
+  color: #04121a;
+  filter: var(--dss-glow-strong);
+}
+.dss-button:hover::after { opacity: 0.92; }
+.dss-button--secondary { background: transparent; color: var(--dss-ink-soft); }
+.dss-button--lg { padding: 0.84rem 1.7rem; font-size: 0.88rem; }
+.dss-button--sm { padding: 0.45rem 0.9rem; font-size: 0.74rem; }
+
+.dss-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px; height: 34px;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  background: var(--dss-surface-solid);
+  color: var(--dss-ink);
+  border: 1.4px solid var(--dss-rule-strong);
+  border-radius: var(--dss-radius);
+  box-shadow: inset 0 1px 0 var(--dss-gloss);
+  filter: var(--dss-glow);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--dss-speed) var(--dss-ease);
+}
+.dss-icon-btn:hover { color: var(--dss-accent); filter: var(--dss-glow-strong); }
+
+/* ── Forms ──────────────────────────────────────────────────── */
+.dss-field { margin-bottom: 1.1rem; }
+.dss-field label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-family: var(--dss-font-mono);
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dss-ink);
+}
+.dss-input, .dss-select, .dss-textarea {
+  width: 100%;
+  padding: 0.68rem 0.8rem;
+  font-family: var(--dss-font-sans);
+  font-size: 0.95rem;
+  color: var(--dss-ink);
+  background: var(--dss-surface-solid);
+  border: 1.4px solid var(--dss-rule-strong);
+  border-radius: var(--dss-radius);
+  box-shadow: inset 0 1px 0 var(--dss-gloss);
+  outline: none;
+  transition: border-color var(--dss-speed) var(--dss-ease);
+}
+.dss-textarea { min-height: 120px; resize: vertical; line-height: 1.6; }
+.dss-input:focus, .dss-select:focus, .dss-textarea:focus {
+  border-color: var(--dss-accent);
+  box-shadow: inset 0 1px 0 var(--dss-gloss), 0 0 0 3px var(--dss-accent-weak);
+}
+
+/* ── Tags & chips ───────────────────────────────────────────── */
+.dss-tag {
+  display: inline-block;
+  font-family: var(--dss-font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 0.16rem 0.5rem;
+  border: 1px solid var(--dss-rule-strong);
+  border-radius: 3px;
+  background: var(--dss-accent-weak);
+  color: var(--dss-accent-ink);
+}
+.dss-chip {
+  display: inline-block;
+  font-family: var(--dss-font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 0.18rem 0.55rem;
+  color: var(--dss-accent-ink);
+  background: var(--dss-accent-weak);
+  border: 1px solid var(--dss-rule);
+  border-radius: 3px;
+}
+
+/* ── Status ─────────────────────────────────────────────────── */
+.dss-status { display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--dss-font-mono); font-size: 0.8rem; }
+.dss-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dss-success); box-shadow: 0 0 8px var(--dss-success); }
+.dss-dot--warning { background: var(--dss-warning); box-shadow: 0 0 8px var(--dss-warning); }
+.dss-dot--error   { background: var(--dss-error);   box-shadow: 0 0 8px var(--dss-error); }
+
+/* ── Accessibility ──────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 768px) {
+  :root { --dss-cut: 18px; }
+  .dss-container { padding: 0 1rem; }
+  .dss-card { padding: 1.1rem; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PRESETS — hot-swappable accent identities
+   ───────────────────────────────────────────────────────────────
+   Presets and themes are ORTHOGONAL:
+
+     <html data-dss-preset="aero" data-theme="light">
+
+   A theme sets surfaces and ink (light vs dark). A preset sets the
+   accent family, halos and glow. Any preset works in either theme.
+
+   These blocks must stay BELOW the theme blocks above — they carry
+   equal specificity, so source order decides the winner. Where a
+   preset needs a per-theme value it qualifies with [data-theme],
+   which raises specificity and wins outright.
+
+   "signal" is the default identity and needs no attribute.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── aero — frutiger aero. Aqua and spring green, glossy, optimistic. */
+:root[data-dss-preset="aero"] {
+  --dss-cyan: #23e0d4; --dss-peri: #7fd8ff; --dss-indigo: #3fa9f5; --dss-mint: #9ef01a;
+  --dss-accent: #23e0d4;
+  --dss-accent-ink: #6ff2e6;
+  --dss-accent-weak: rgba(35, 224, 212, 0.12);
+  --dss-rule: rgba(140, 230, 255, 0.26);
+  --dss-rule-strong: rgba(140, 230, 255, 0.58);
+  --dss-glow:        drop-shadow(0 0 18px rgba(35, 224, 212, 0.20));
+  --dss-glow-strong: drop-shadow(0 0 30px rgba(35, 224, 212, 0.38));
+  --dss-halo-1: rgba(35, 224, 212, 0.13);
+  --dss-halo-2: rgba(158, 240, 26, 0.09);
+}
+:root[data-dss-preset="aero"][data-theme="light"] {
+  --dss-accent: #0e8f86;
+  --dss-accent-ink: #0a7169;
+  --dss-accent-weak: rgba(14, 143, 134, 0.13);
+}
+
+/* ── softclub — gen-x softclub. Lilac, periwinkle, iridescent chrome. */
+:root[data-dss-preset="softclub"] {
+  --dss-cyan: #b8a9ff; --dss-peri: #f0a9e0; --dss-indigo: #8d7dfb; --dss-mint: #a9e8ff;
+  --dss-accent: #c4a9ff;
+  --dss-accent-ink: #dbc9ff;
+  --dss-accent-weak: rgba(196, 169, 255, 0.13);
+  --dss-rule: rgba(205, 185, 255, 0.26);
+  --dss-rule-strong: rgba(205, 185, 255, 0.58);
+  --dss-glow:        drop-shadow(0 0 20px rgba(196, 169, 255, 0.20));
+  --dss-glow-strong: drop-shadow(0 0 32px rgba(196, 169, 255, 0.38));
+  --dss-halo-1: rgba(196, 169, 255, 0.14);
+  --dss-halo-2: rgba(240, 169, 224, 0.10);
+}
+:root[data-dss-preset="softclub"][data-theme="light"] {
+  --dss-accent: #6d4fc4;
+  --dss-accent-ink: #56399f;
+  --dss-accent-weak: rgba(109, 79, 196, 0.13);
+}
+
+/* ── eink — matte paper. Monochrome, sharp, no glow. Keeps the
+      e-ink direction available without losing Signal Glass.        */
+:root[data-dss-preset="eink"] {
+  --dss-cut: 10px;
+  --dss-blur: 0px;
+  --dss-accent: #e9ecef;
+  --dss-accent-ink: #ffffff;
+  --dss-accent-weak: rgba(233, 236, 239, 0.10);
+  --dss-iri: linear-gradient(100deg, #ffffff, #b9c2cc 60%, #ffffff);
+  --dss-rule: rgba(233, 240, 247, 0.30);
+  --dss-rule-strong: rgba(233, 240, 247, 0.62);
+  --dss-glow: none;
+  --dss-glow-strong: drop-shadow(0 0 0 transparent);
+  --dss-halo-1: transparent;
+  --dss-halo-2: transparent;
+  --dss-surface-tint: rgba(22, 26, 32, 0.92);
+}
+:root[data-dss-preset="eink"][data-theme="light"] {
+  --dss-accent: #0f1417;
+  --dss-accent-ink: #0f1417;
+  --dss-accent-weak: rgba(15, 20, 23, 0.08);
+  --dss-iri: linear-gradient(100deg, #0f1417, #5d6a75 60%, #0f1417);
+  --dss-rule: rgba(15, 20, 23, 0.30);
+  --dss-rule-strong: rgba(15, 20, 23, 0.62);
+  --dss-surface-tint: rgba(255, 255, 255, 0.94);
+  --dss-bg: #eceef0;
+}
+
+/* ── terminal — phosphor green. For consoles and admin surfaces.   */
+:root[data-dss-preset="terminal"] {
+  --dss-cyan: #3bf58f; --dss-peri: #7ef0b8; --dss-indigo: #24c46b; --dss-mint: #b8ff9e;
+  --dss-accent: #3bf58f;
+  --dss-accent-ink: #86ffbe;
+  --dss-accent-weak: rgba(59, 245, 143, 0.12);
+  --dss-rule: rgba(120, 245, 180, 0.26);
+  --dss-rule-strong: rgba(120, 245, 180, 0.58);
+  --dss-glow:        drop-shadow(0 0 18px rgba(59, 245, 143, 0.20));
+  --dss-glow-strong: drop-shadow(0 0 30px rgba(59, 245, 143, 0.38));
+  --dss-halo-1: rgba(59, 245, 143, 0.12);
+  --dss-halo-2: rgba(36, 196, 107, 0.09);
+}
+:root[data-dss-preset="terminal"][data-theme="light"] {
+  --dss-accent: #157a45;
+  --dss-accent-ink: #106136;
+  --dss-accent-weak: rgba(21, 122, 69, 0.13);
+}

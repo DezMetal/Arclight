@@ -89,8 +89,9 @@ some Windows 10 machines do not and will need to be online during install.
 
 ## The workspace model
 
-The window is a tree of **panes**. Any pane can host any **tool**, and any pane
-can split horizontally or vertically without limit.
+The window is a tree of **frames**. A frame is one splittable work area holding
+one tool. Any frame can host any tool, and any frame can split horizontally or
+vertically without limit.
 
 | Tool | What it does |
 | --- | --- |
@@ -99,9 +100,34 @@ can split horizontally or vertically without limit.
 | **Terminal** | A real shell, via ConPTY |
 | **Settings** | Theme, font size, tab size, autosave, layout |
 
-Pane headers carry the tool selector, split controls, maximize and close. The
-focused pane is the one with the accent glow around it. Layout and settings
-persist to `localStorage` under `arclight_layout` and `arclight_settings`.
+Frame headers carry the tool selector, split controls, maximize and close, and
+show the frame's id — the same id `dnet` commands and the control API use.
+Drag a header onto another frame to swap their positions.
+
+### Focus and selection
+
+Two different things, deliberately:
+
+- **Focused** — the frame you last interacted with, shown with an accent glow.
+  Follows clicks anywhere, including inside a tool's content.
+- **Selected** — the standing target for opened files, shown with a cyan
+  outline and a crosshair. Set by clicking a frame's *header*; clicking content
+  never changes it.
+
+Opening a file resolves in this order: an explicit target (the **Open in
+frame** menu) → the selected frame → the `defaultOpen` setting, which is either
+the frame the request came from or a new frame.
+
+Opening into a new frame splits the **largest** frame on screen, not whichever
+was focused, so a file opened from a narrow sidebar does not bisect the sidebar.
+
+Each frame keeps **one context per tool**, so switching a frame from explorer to
+terminal and back returns the explorer to the directory it was showing. A tool
+opened in a frame for the first time inherits that frame's current location
+rather than starting at your home directory.
+
+Layout and settings persist to `localStorage` under `arclight_layout` and
+`arclight_settings`.
 
 ## The terminal
 
@@ -110,14 +136,15 @@ Windows via `portable-pty`, which means tab completion, arrow keys, readline,
 and every interactive program works: Python REPL, `ssh`, `vim`, `git commit`,
 progress bars, password prompts.
 
-**Sessions live in the Rust backend, not in the UI.** A pane can unmount, the
+**Sessions live in the Rust backend, not in the UI.** A frame can unmount, the
 webview can hot-reload, the layout can be rearranged, the font size can change —
 the shell keeps running and keeps buffering output. Reattaching replays
-scrollback so the pane looks exactly as it did. Killing a shell is something you
-do deliberately, with the restart button.
+scrollback so the frame looks exactly as it did. Killing a shell is something
+you do deliberately, with the restart button; restarting reopens in the
+directory the shell was last in.
 
 `cmd.exe` is the default. PowerShell, PowerShell 7 and Git Bash are offered in
-the pane header when they are installed.
+the frame header when they are installed.
 
 Working directory is reported by the shell itself through OSC 9;9 (Windows) or
 OSC 7 (POSIX), parsed out of the PTY stream with a scanner that handles
@@ -125,22 +152,25 @@ sequences split across read boundaries.
 
 ## The `dnet` command suite
 
-Type `dnet <command>` in any terminal pane to drive the workspace. These are
-matched on the input line before a byte reaches the shell.
+Type `dnet <command>` in any terminal frame to drive the workspace. These are
+matched on the input line, character by character, before a byte reaches the
+shell — so the shell never sees them and never reports `'dnet' is not
+recognized`.
 
 | Command | Does |
 | --- | --- |
 | `dnet help` | List every command |
-| `dnet edit <file> [-h\|-v]` | Open a file in a new editor split |
-| `dnet open <file>` | Open a file in the active editor |
-| `dnet term [-h\|-v]` | New terminal split at this directory |
-| `dnet explore [-h\|-v]` | New explorer split at this directory |
+| `dnet edit <file> [-h\|-v]` | Open a file in a new frame |
+| `dnet open <file>` | Open a file wherever the workspace routes it |
+| `dnet term [-h\|-v]` | New terminal frame at this directory |
+| `dnet explore [-h\|-v]` | New explorer frame at this directory |
 | `dnet reveal [path]` | Show in Windows Explorer |
 | `dnet theme <dnet\|arc\|light>` | Switch theme |
 | `dnet font <size>` | Set interface font size |
 | `dnet new <file\|dir> <path>` | Create something |
-| `dnet panes` | List panes and their ids |
-| `dnet close <paneId>` | Close a pane |
+| `dnet frames` | List frames, their ids, and which is focused or targeted |
+| `dnet target <frameId\|none>` | Select a frame as the open target, or release it |
+| `dnet close <frameId>` | Close a frame |
 | `dnet layout reset` | Restore the default layout |
 | `dnet sessions` | List running shells |
 | `dnet info` | Host and workspace details |
@@ -152,18 +182,113 @@ documents the context object each command receives.
 
 ## Theming
 
-Theming is driven by **semantic design tokens** in
-[`src/styles/dss.css`](src/styles/dss.css), derived from the D-Net Signature
-Stylesheet and retuned for IDE density. Three themes ship:
+Arclight ships the **canonical D-Net Signature Stylesheet** (v8.1.0 "Signal
+Glass"). DSS lives at `test/DSS/` and owns its own distribution: Arclight is a
+registered target in `targets.json`, and the copy under
+[`src/styles/vendor/`](src/styles/vendor/) is **generated — never edit it**.
 
-- **D-Net** — the signature palette, softer, built for long sessions
-- **Arc** — full-intensity DSS cyan
-- **Alabaster** — light
+```bash
+cd ../DSS && python3 sync.py
+```
 
-Every surface reads the same variables, *including* the terminal's 16-colour
-ANSI palette and the editor's syntax highlighting. A theme switch moves
-everything at once. Adding a theme means adding one token block — no component
-changes, and no `!important` anywhere.
+```bash
+cd ../DSS && python3 sync.py --check
+```
+
+`--check` reports drift and exits non-zero, so CI catches a stale copy.
+
+[`src/styles/dss.css`](src/styles/dss.css) is Arclight's adaptation layer. It
+imports the vendored core, maps DSS tokens onto Arclight's shorter aliases, and
+retunes geometry for IDE density — canonical DSS uses 26px corner cuts and page
+rhythm, which is right for a document and far too loose for a frame header.
+
+### Themes and presets
+
+Theming is DSS's own, driven by two attributes on `<html>`:
+
+| Attribute | Values |
+| --- | --- |
+| `data-theme` | `dark`, `light` |
+| `data-dss-preset` | `signal`, `aero`, `softclub`, `eink`, `terminal` |
+
+That is ten combinations, all from the shared stylesheet. Every surface reads
+the same tokens — chrome, the editor's syntax colours, and the terminal's
+16-colour ANSI palette — so a change moves the whole app at once.
+
+Set them in **Settings**, or from a terminal:
+
+```bash
+dnet theme dark
+```
+
+```bash
+dnet preset aero
+```
+
+Adding a preset means adding it to DSS and re-syncing. No Arclight component
+changes, and no `!important` overrides of framework class names anywhere.
+
+### Glass is opt-in
+
+Canonical DSS puts `backdrop-filter` glass on every surface. In a workspace of
+many frames that is a blur pass per frame per paint, so Arclight applies it
+only where asked, via `.dss-glass-surface`. Frame bodies use a solid surface.
+
+## The control API
+
+Arclight can expose a local HTTP API so other systems drive the workspace —
+reading frames, opening files into a specific frame, splitting frames, writing
+to terminals. This is the surface AIM, Aether and local automation use.
+
+It is **off by default**; Arclight is fully usable with it disabled. Enable it
+in **Settings → Control API**, which shows the port and token.
+
+Three properties, because this is remote control of a program that edits files
+and runs shells:
+
+- **Off unless enabled.** Nothing listens otherwise.
+- **Loopback only by default.** Binding wider is a separate, explicit toggle.
+- **Token required**, compared in constant time, on every route but `/v1/health`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/frames
+```
+
+| Route | Method | Does |
+| --- | --- | --- |
+| `/v1/health` | GET | Liveness. No auth. |
+| `/v1/state` | GET | Frames, focus, selection, settings, tools |
+| `/v1/frames` | GET | Just the frames |
+| `/v1/frames/split` | POST | `{ frame_id, direction, tool, context? }` |
+| `/v1/frames/{id}/tool` | POST | `{ tool }` |
+| `/v1/frames/{id}/close` | POST | Close it |
+| `/v1/frames/{id}/select` | POST | Make it the open target; `{id}` may be `none` |
+| `/v1/open` | POST | `{ path, frame_id?, new_frame?, direction? }` |
+| `/v1/command` | POST | `{ command }` — any `dnet` command, output returned |
+| `/v1/terminal/{id}/write` | POST | `{ data }` — write to that frame's shell |
+| `/v1/events` | GET | Server-sent stream of workspace events |
+
+`/v1/command` runs the same `dnet` implementations the terminal exposes, so
+scripted and typed control share one code path rather than drifting apart.
+
+### Architecture, and why there is no Node inside
+
+The workspace lives in the webview, so the Rust server mirrors it: the frontend
+publishes a snapshot on every change, and commands are bridged to the frontend
+and awaited. Arclight speaks its own small protocol and stays a 4 MB binary.
+
+```
+Arclight (Rust)  ──HTTP/SSE──┬── dnet-api-node   (gateway: keys, routing, scripts)
+  127.0.0.1:8787             ├── Aether          (direct)
+  off by default             └── local AI / IAC  (direct)
+```
+
+[dnet-api-node](https://github.com/DezMetal/dnet-api-node) is a **separate
+process**, not embedded — bundling a Next.js runtime inside the app would cost
+more than the app. It fronts Arclight for callers who want one key scheme and
+one address across several systems; its repository ships a ready-made endpoint
+pack (`data/arclight-endpoints.example.json`). Anything can equally call
+Arclight directly.
 
 ## Architecture
 
@@ -173,30 +298,43 @@ src-tauri/
   src/lib.rs         Command registration
   src/pty.rs         PTY sessions, scrollback, OSC cwd parsing
   src/fs_api.rs      Filesystem commands, Windows path handling
+  src/control.rs     The control API server
   src/sysinfo.rs     Host details
 
 src/
   main.tsx           React entry
   App.tsx            Registers the four tools
-  context/           Layout tree, settings, pane registry, event bus
-  components/        LayoutManager + the four tool panes
+  context/           Frame tree, settings, focus and selection, event bus
+  components/        LayoutManager, the four tools, ControlBridge
   lib/api.ts         The only place the UI talks to the backend
+  lib/control.ts     Frontend half of the control API
   lib/customCommands.ts
   lib/terminalTheme.ts, lib/editorTheme.ts
-  styles/dss.css     Design tokens and signature primitives
+  styles/dss.css     Adaptation layer over canonical DSS
+  styles/vendor/     GENERATED - synced from test/DSS, never edit
 
 tools/generate_icons.py   Draws the icon set with Pillow
+tools/release.py          Version sync and packaging
 ```
 
-The frontend never calls `invoke` directly outside `lib/api.ts`, so the
-transport can change without touching a component.
+The frontend never calls `invoke` directly outside `lib/api.ts` and
+`lib/control.ts`, so the transport can change without touching a component.
 
-### Why there is no server
+### Why there is no HTTP server by default
 
 An earlier version of this project ran an Express server that bound `0.0.0.0`
 with no authentication and exposed both filesystem and shell-exec endpoints —
-anyone on the same network had full remote code execution. Tauri IPC is
-in-process. There is no port to reach and nothing to authenticate.
+anyone on the same network had full remote code execution. Filesystem and shell
+access now go over Tauri IPC, which is in-process: no port, nothing to
+authenticate. The control API is the one optional exception, and it is off
+until you turn it on.
+
+### Shared code
+
+D-Net Lab code shared between programs is never a hand-edited fork. It is a
+submodule pointing at the original repository, or a generated copy produced by
+that project's own sync mechanism, so every program stays compatible and
+current. DSS is the generated-copy case; see [Theming](#theming).
 
 ## Not done yet
 
@@ -205,7 +343,9 @@ in-process. There is no port to reach and nothing to authenticate.
 - Recursive folder copy in the explorer (files copy; folders need the terminal)
 - LSP / autocomplete beyond CodeMirror's built-in word completion
 - Custom window chrome — currently uses the native title bar
-- Split-pane keyboard navigation
+- Keyboard navigation between frames
+- Reordering frames is a swap (drag one header onto another); free
+  drag-to-reposition is not implemented
 
 ## Licence
 

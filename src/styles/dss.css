@@ -1,33 +1,59 @@
 /*
- * Arclight — DSS token layer
+ * Arclight — DSS adaptation layer
  *
- * Derived from D-Net Signature Stylesheet v5.0, retuned for IDE chrome.
+ * Imports canonical DSS (v8.1.0 "Signal Glass") and adapts it for IDE chrome.
  *
- * The upstream DSS is built for documents: 1.5rem/2.5rem card padding, 85rem
- * max widths, backdrop-blur on every surface. A tiled workspace needs dense
- * chrome and cannot afford a blur pass per pane at 60fps, so the geometry and
- * effect scales here are tighter and blur is opt-in via .dss-blur.
+ * The vendored copy under ./vendor/ is GENERATED. Never edit it. It is
+ * distributed from the single source of truth at /test/DSS:
  *
- * Everything downstream — panes, buttons, and the terminal's 16-colour ANSI
- * palette — reads these variables. Nothing overrides Tailwind class names.
+ *     cd ../DSS && python3 sync.py            refresh every consumer
+ *     cd ../DSS && python3 sync.py --check    report drift, exit 1 if stale
+ *
+ * Themes and presets are DSS's own: `data-theme` is dark or light, and
+ * `data-dss-preset` selects Signal Glass, Aero, Softclub, E-Ink or Terminal.
+ * Arclight sets those attributes and inherits every combination for free.
+ *
+ * Canonical DSS is built for pages: 26px corner cuts, generous rhythm, glass
+ * on every surface. A workspace of many small frames needs tighter geometry
+ * and cannot afford a blur pass per frame per paint, so the overrides below
+ * retune density and make glass opt-in via .dss-glass-surface.
  */
 
-:root {
-  /* -- Typography -- */
-  --dss-font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --dss-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+@import "./vendor/dss.css";
 
-  /* -- Geometry, retuned for IDE density -- */
-  --dss-cut-size: 10px;
+/* ==========================================================================
+   Arclight token aliases
+
+   Short names mapped onto canonical DSS. Components read these; themes and
+   presets only ever touch the canonical tokens, so every DSS preset flows
+   through without a single component change.
+   ========================================================================== */
+:root {
+  --dss-bg-app: var(--dss-bg);
+  --dss-bg-panel: var(--dss-surface-solid);
+  --dss-bg-surface: color-mix(in srgb, var(--dss-surface-solid) 82%, var(--dss-ink) 6%);
+  --dss-bg-input: var(--dss-bg-deep);
+
+  --dss-border: var(--dss-rule);
+  --dss-border-soft: var(--dss-rule-soft);
+  --dss-border-strong: var(--dss-rule-strong);
+
+  --dss-text: var(--dss-ink);
+  --dss-text-dim: var(--dss-ink-soft);
+  --dss-text-faint: var(--dss-ink-faint);
+
+  --dss-accent-hot: var(--dss-accent-ink);
+  --dss-destructive: var(--dss-error);
+
+  /* IDE geometry. --dss-notch is derived from --dss-cut in canonical DSS, so
+     overriding the cut re-derives every notched corner at the right scale. */
+  --dss-cut: 10px;
   --dss-cut-sm: 6px;
   --dss-animation-speed: 0.16s;
   --dss-border-thickness: 1px;
   --dss-glow-blur: 10px;
   --dss-glow-spread: 1px;
-  --dss-backdrop-blur: 12px;
-  --dss-module-opacity: 0.92;
 
-  /* -- Z-index hierarchy -- */
   --dss-z-dropdown: 900;
   --dss-z-tooltip: 950;
   --dss-z-modal: 1000;
@@ -35,160 +61,63 @@
 }
 
 /* ==========================================================================
-   Theme: D-Net (default)
-   The palette that ships live in dss.css — softer, built for long sessions.
+   Terminal palettes
+
+   ANSI needs sixteen literal colours, so these cannot be derived. Keyed off
+   the DSS theme attribute rather than an Arclight-specific class.
    ========================================================================== */
 :root,
-.theme-dnet {
-  --dss-bg-app: #0d1117;
-  --dss-bg-panel: #161b22;
-  --dss-bg-surface: #1c2128;
-  --dss-bg-input: #010409;
-
-  --dss-border: rgba(0, 83, 179, 0.5);
-  --dss-border-soft: rgba(139, 148, 158, 0.22);
-
-  --dss-text: #c9d1d9;
-  --dss-text-dim: #8b949e;
-  --dss-text-faint: #6e7681;
-
-  --dss-accent: #9fbffe;
-  --dss-accent-hot: #00e0ff;
-
-  --dss-success: #2f855a;
-  --dss-warning: #d69e2e;
-  --dss-error: #c53030;
-  --dss-destructive: #f87171;
-
-  --dss-texture: rgba(255, 255, 255, 0.035);
-
-  /* Terminal ANSI palette, tuned against --dss-bg-app */
-  --term-bg: #0d1117;
-  --term-fg: #c9d1d9;
-  --term-cursor: #9fbffe;
-  --term-selection: rgba(159, 191, 254, 0.26);
-  --term-black: #161b22;
-  --term-red: #ff7b72;
-  --term-green: #3fb950;
-  --term-yellow: #d29922;
-  --term-blue: #58a6ff;
-  --term-magenta: #bc8cff;
-  --term-cyan: #39c5cf;
-  --term-white: #b1bac4;
-  --term-bright-black: #6e7681;
-  --term-bright-red: #ffa198;
-  --term-bright-green: #56d364;
-  --term-bright-yellow: #e3b341;
-  --term-bright-blue: #79c0ff;
-  --term-bright-magenta: #d2a8ff;
-  --term-bright-cyan: #56d4dd;
-  --term-bright-white: #f0f6fc;
-}
-
-/* ==========================================================================
-   Theme: Arc — the declared DSS signature cyan, at full intensity
-   ========================================================================== */
-.theme-arc {
-  --dss-bg-app: #080b10;
-  --dss-bg-panel: #0d1117;
-  --dss-bg-surface: #141a22;
-  --dss-bg-input: #000000;
-
-  --dss-border: rgba(0, 224, 255, 0.36);
-  --dss-border-soft: rgba(0, 224, 255, 0.16);
-
-  --dss-text: #d6e4ea;
-  --dss-text-dim: #7d99a5;
-  --dss-text-faint: #5a7280;
-
-  --dss-accent: #00e0ff;
-  --dss-accent-hot: #7df9ff;
-
-  --dss-success: #2f855a;
-  --dss-warning: #d69e2e;
-  --dss-error: #c53030;
-  --dss-destructive: #f87171;
-
-  --dss-texture: rgba(0, 224, 255, 0.05);
-
-  --dss-glow-blur: 14px;
-  --dss-glow-spread: 2px;
-
-  --term-bg: #080b10;
-  --term-fg: #d6e4ea;
-  --term-cursor: #00e0ff;
+:root[data-theme="dark"] {
+  --term-bg: var(--dss-bg);
+  --term-fg: var(--dss-ink-soft);
+  --term-cursor: var(--dss-accent);
   --term-selection: rgba(0, 224, 255, 0.24);
-  --term-black: #0d1117;
-  --term-red: #ff6b7a;
-  --term-green: #2ee6a8;
-  --term-yellow: #ffd166;
-  --term-blue: #4aa8ff;
-  --term-magenta: #c77dff;
+  --term-black: #161b22;
+  --term-red: #ff6b6b;
+  --term-green: #35d39a;
+  --term-yellow: #ffd479;
+  --term-blue: #667eea;
+  --term-magenta: #bc8cff;
   --term-cyan: #00e0ff;
-  --term-white: #b8ccd6;
-  --term-bright-black: #46606e;
-  --term-bright-red: #ff9aa5;
-  --term-bright-green: #72f1b8;
-  --term-bright-yellow: #ffe29a;
-  --term-bright-blue: #82c7ff;
-  --term-bright-magenta: #e0aaff;
-  --term-bright-cyan: #7df9ff;
+  --term-white: #b9c2cc;
+  --term-bright-black: #a3adb8;
+  --term-bright-red: #ff9a9a;
+  --term-bright-green: #7ef0d0;
+  --term-bright-yellow: #ffe6ab;
+  --term-bright-blue: #9fbffe;
+  --term-bright-magenta: #d2a8ff;
+  --term-bright-cyan: #7fe9ff;
   --term-bright-white: #ffffff;
 }
 
-/* ==========================================================================
-   Theme: Alabaster — light
-   ========================================================================== */
-.theme-light {
-  --dss-bg-app: #f0f2f5;
-  --dss-bg-panel: #ffffff;
-  --dss-bg-surface: #f6f8fa;
-  --dss-bg-input: #eaedf1;
-
-  --dss-border: rgba(0, 0, 0, 0.14);
-  --dss-border-soft: rgba(0, 0, 0, 0.08);
-
-  --dss-text: #22272e;
-  --dss-text-dim: #57606a;
-  --dss-text-faint: #7d868f;
-
-  --dss-accent: #0053b3;
-  --dss-accent-hot: #0069e0;
-
-  --dss-success: #1a7f37;
-  --dss-warning: #9a6700;
-  --dss-error: #cf222e;
-  --dss-destructive: #d1242f;
-
-  --dss-texture: rgba(0, 0, 0, 0.035);
-
-  --dss-glow-blur: 5px;
-  --dss-glow-spread: 0px;
-
-  --term-bg: #ffffff;
-  --term-fg: #24292f;
-  --term-cursor: #0053b3;
-  --term-selection: rgba(0, 83, 179, 0.18);
-  --term-black: #24292f;
-  --term-red: #cf222e;
-  --term-green: #116329;
-  --term-yellow: #4d2d00;
-  --term-blue: #0969da;
-  --term-magenta: #8250df;
-  --term-cyan: #1b7c83;
-  --term-white: #6e7781;
-  --term-bright-black: #57606a;
-  --term-bright-red: #a40e26;
-  --term-bright-green: #1a7f37;
-  --term-bright-yellow: #633c01;
-  --term-bright-blue: #218bff;
-  --term-bright-magenta: #a475f9;
-  --term-bright-cyan: #3192aa;
-  --term-bright-white: #8c959f;
+:root[data-theme="light"] {
+  --term-bg: var(--dss-surface-solid);
+  --term-fg: #06131c;
+  --term-cursor: var(--dss-accent);
+  --term-selection: rgba(0, 114, 163, 0.18);
+  --term-black: #06131c;
+  --term-red: #b32020;
+  --term-green: #1b7a53;
+  --term-yellow: #8a5a00;
+  --term-blue: #0072a3;
+  --term-magenta: #6b4bb8;
+  --term-cyan: #0a7c96;
+  --term-white: #556a7a;
+  --term-bright-black: #2f4250;
+  --term-bright-red: #d13434;
+  --term-bright-green: #23996a;
+  --term-bright-yellow: #a97300;
+  --term-bright-blue: #0a8cc4;
+  --term-bright-magenta: #8360d6;
+  --term-bright-cyan: #1298b4;
+  --term-bright-white: #06131c;
 }
 
 /* ==========================================================================
-   Base
+   IDE density
+
+   Canonical DSS sets page rhythm. Chrome needs to be tighter and must not
+   scroll.
    ========================================================================== */
 html,
 body,
@@ -200,19 +129,29 @@ body,
 }
 
 body {
-  font-family: var(--dss-font-sans);
-  background-color: var(--dss-bg-app);
-  color: var(--dss-text);
   font-size: 13px;
   line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  transition:
-    background-color var(--dss-animation-speed) ease,
-    color var(--dss-animation-speed) ease;
+  background: var(--dss-bg);
+  color: var(--dss-ink-soft);
 }
 
-/* Chrome should not feel like a document: no text selection outside content. */
+/* DSS headings carry display sizing and rules for prose. Frame headers use
+   .dss-label instead, so headings inside tools stay inert. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  padding: 0;
+  border: none;
+  font-size: inherit;
+  line-height: inherit;
+  letter-spacing: normal;
+}
+
+/* Chrome should not feel like a document. */
 body,
 .dss-chrome {
   user-select: none;
@@ -225,19 +164,10 @@ body,
 }
 
 /* ==========================================================================
-   Signature primitives
+   Arclight primitives
    ========================================================================== */
-
-/* The DSS chamfer: top-left and bottom-right corners cut. */
 .dss-cut {
-  clip-path: polygon(
-    0 var(--dss-cut-size),
-    var(--dss-cut-size) 0,
-    100% 0,
-    100% calc(100% - var(--dss-cut-size)),
-    calc(100% - var(--dss-cut-size)) 100%,
-    0 100%
-  );
+  clip-path: var(--dss-notch);
 }
 
 .dss-cut-sm {
@@ -251,28 +181,27 @@ body,
   );
 }
 
-.dss-panel {
-  background-color: var(--dss-bg-panel);
-  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border);
-}
-
-/* Applied to the focused pane only — the glow is the focus indicator. */
+/* The focused frame. Uses box-shadow rather than DSS's drop-shadow filter:
+   a filter on a scrolling container forces a repaint of the whole subtree. */
 .dss-glow {
   box-shadow:
     0 0 0 var(--dss-border-thickness) var(--dss-accent),
-    0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-accent);
+    0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-accent-weak);
 }
 
-/* Opt-in blur. Costly to composite, so it is never applied to pane bodies. */
-.dss-blur {
-  backdrop-filter: blur(var(--dss-backdrop-blur));
+/* Opt-in glass. Never applied to frame bodies: a backdrop-filter per frame is
+   the single most expensive thing this UI could do per paint. */
+.dss-glass-surface {
+  background-color: var(--dss-surface-tint);
+  background-image: var(--dss-surface-sheen);
+  backdrop-filter: var(--dss-glass);
 }
 
 .dss-grid-bg {
   --grid-size: 2.5rem;
   background-image:
-    linear-gradient(to right, var(--dss-texture) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--dss-texture) 1px, transparent 1px);
+    linear-gradient(to right, var(--dss-rule-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--dss-rule-soft) 1px, transparent 1px);
   background-size: var(--grid-size) var(--grid-size);
 }
 
@@ -281,11 +210,11 @@ body,
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 10px;
-  color: var(--dss-text-dim);
+  color: var(--dss-ink-faint);
 }
 
 /* ==========================================================================
-   Controls
+   Compact controls
    ========================================================================== */
 .dss-button {
   font-family: var(--dss-font-mono);
@@ -311,39 +240,25 @@ body,
 
 .dss-button:hover:not(:disabled) {
   background-color: var(--dss-accent);
-  color: var(--dss-bg-app);
-  box-shadow: 0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-accent);
+  color: var(--dss-bg);
 }
 
 .dss-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-  filter: grayscale(70%);
 }
 
 .dss-button--ghost {
-  color: var(--dss-text-dim);
-  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border-soft);
+  color: var(--dss-ink-soft);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-rule-soft);
 }
 
 .dss-button--ghost:hover:not(:disabled) {
-  color: var(--dss-text);
+  color: var(--dss-ink);
   background-color: var(--dss-bg-surface);
-  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-border);
+  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-rule);
 }
 
-.dss-button--destructive {
-  color: var(--dss-destructive);
-  box-shadow: 0 0 0 var(--dss-border-thickness) var(--dss-destructive);
-}
-
-.dss-button--destructive:hover:not(:disabled) {
-  background-color: var(--dss-destructive);
-  color: var(--dss-bg-app);
-  box-shadow: 0 0 var(--dss-glow-blur) var(--dss-glow-spread) var(--dss-destructive);
-}
-
-/* Icon-only chrome buttons: no chamfer, no glow, just a hover wash. */
 .dss-icon-button {
   display: inline-flex;
   align-items: center;
@@ -351,7 +266,7 @@ body,
   padding: 4px;
   border: none;
   background: transparent;
-  color: var(--dss-text-dim);
+  color: var(--dss-ink-soft);
   cursor: pointer;
   transition: all var(--dss-animation-speed) ease;
 }
@@ -372,20 +287,22 @@ body,
   padding: 0.4rem 0.6rem;
   font-family: var(--dss-font-mono);
   font-size: 12px;
-  background-color: var(--dss-bg-input);
-  color: var(--dss-text);
-  border: var(--dss-border-thickness) solid var(--dss-border-soft);
+  background-color: var(--dss-bg-deep);
+  color: var(--dss-ink);
+  border: var(--dss-border-thickness) solid var(--dss-rule-soft);
+  border-radius: var(--dss-radius);
   outline: none;
+  clip-path: none;
   transition: all var(--dss-animation-speed) ease;
 }
 
 .dss-input:focus {
   border-color: var(--dss-accent);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--dss-accent) 55%, transparent);
+  box-shadow: 0 0 6px var(--dss-accent-weak);
 }
 
 .dss-input::placeholder {
-  color: var(--dss-text-faint);
+  color: var(--dss-ink-faint);
 }
 
 select.dss-input {
@@ -405,7 +322,8 @@ select.dss-input {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--dss-border-soft);
+  background: var(--dss-rule-soft);
+  border-radius: var(--dss-radius);
 }
 
 ::-webkit-scrollbar-thumb:hover {

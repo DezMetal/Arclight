@@ -1,45 +1,117 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
-import { LayoutNode, PaneLeaf, SplitDirection, PluginDefinition } from "../types";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-export type ThemeName = "dnet" | "arc" | "light";
+import {
+  FrameLeaf,
+  FrameSummary,
+  LayoutNode,
+  OpenTarget,
+  SplitDirection,
+  ToolDefinition,
+} from "../types";
+
+/**
+ * Themes and presets are canonical DSS, not an Arclight invention.
+ *
+ * DSS drives everything from two attributes on <html>: `data-theme` picks dark
+ * or light, `data-dss-preset` picks a look. Every combination themes the whole
+ * app - including the terminal palette and the editor's syntax colours -
+ * because they all read the same tokens.
+ */
+export type ThemeName = "dark" | "light";
+export type PresetName = "signal" | "aero" | "softclub" | "eink" | "terminal";
 
 export const THEMES: { id: ThemeName; label: string; description: string }[] = [
-  { id: "dnet", label: "D-Net", description: "Signature palette, tuned for long sessions" },
-  { id: "arc", label: "Arc", description: "Full-intensity DSS cyan" },
-  { id: "light", label: "Alabaster", description: "Clean light surface" },
+  { id: "dark", label: "Dark", description: "The house default" },
+  { id: "light", label: "Light", description: "Icy, never grey" },
 ];
 
-interface WorkspaceSettings {
+export const PRESETS: { id: PresetName; label: string; description: string }[] = [
+  { id: "signal", label: "Signal Glass", description: "Misty translucent glass, cyan glow" },
+  { id: "aero", label: "Aero", description: "Brighter, glassier, higher gloss" },
+  { id: "softclub", label: "Softclub", description: "Softer edges, warmer diffusion" },
+  { id: "eink", label: "E-Ink", description: "Flat and matte, minimal glow" },
+  { id: "terminal", label: "Terminal", description: "High contrast, phosphor" },
+];
+
+/** What happens when a file is opened and no frame is selected. */
+export type DefaultOpenBehaviour = "current" | "new";
+
+export interface WorkspaceSettings {
   fontSize: number;
   tabSize: number;
   autosave: boolean;
   showHidden: boolean;
   theme: ThemeName;
+  preset: PresetName;
   rememberState: boolean;
+  /** Where files land when nothing is explicitly selected. */
+  defaultOpen: DefaultOpenBehaviour;
+  /** Direction used when a file opens into a new frame. */
+  defaultSplit: SplitDirection;
+
+  /** Control API. Off by default; Arclight is fully usable offline. */
+  apiEnabled: boolean;
+  apiPort: number;
+  apiToken: string;
+  /** Bind beyond loopback. A deliberate, separate choice from enabling. */
+  apiAllowRemote: boolean;
 }
 
 interface WorkspaceContextProps {
   layoutTree: LayoutNode | null;
   setLayoutTree: React.Dispatch<React.SetStateAction<LayoutNode | null>>;
-  activePaneId: string | null;
-  setActivePaneId: (id: string | null) => void;
-  lastActiveEditorId: string | null;
-  setLastActiveEditorId: (id: string | null) => void;
-  plugins: Record<string, PluginDefinition>;
-  registerPlugin: (plugin: PluginDefinition) => void;
-  splitPane: (paneId: string, direction: SplitDirection, newPluginType: string, initialState?: any) => void;
-  closePane: (paneId: string) => void;
-  setPanePlugin: (paneId: string, pluginType: string) => void;
-  setPaneState: (paneId: string, state: any) => void;
-  updateSplitPercentage: (parentId: string, percentage: number) => void;
+
+  /** The frame with keyboard focus. Follows interaction. */
+  focusedFrameId: string | null;
+  focusFrame: (id: string | null) => void;
+
+  /**
+   * The frame explicitly chosen as the target for opens. Sticky: it is set by
+   * clicking a frame's header, never by interacting with its content, so
+   * clicking a file in the explorer does not silently retarget opens.
+   */
+  selectedFrameId: string | null;
+  selectFrame: (id: string | null) => void;
+  toggleSelectFrame: (id: string) => void;
+
+  tools: Record<string, ToolDefinition>;
+  registerTool: (tool: ToolDefinition) => void;
+
+  frames: FrameSummary[];
+  getFrameContext: (frameId: string, tool?: string) => any;
+
+  splitFrame: (
+    frameId: string,
+    direction: SplitDirection,
+    tool: string,
+    context?: any,
+  ) => string;
+  closeFrame: (frameId: string) => void;
+  /** Exchange two frames' positions, keeping their contexts. */
+  swapFrames: (a: string, b: string) => void;
+  setFrameTool: (frameId: string, tool: string) => void;
+  setFrameContext: (frameId: string, patch: Record<string, unknown>) => void;
+  setSplitPercentage: (splitId: string, percentage: number) => void;
+
+  /** Resolve where an open would land, without performing it. */
+  resolveOpenTarget: (target?: OpenTarget) => { frameId: string | null; willCreate: boolean };
+  /** Open a file, honouring selection and the configured default. */
+  openFile: (path: string, target?: OpenTarget) => void;
+
   emitEvent: (name: string, payload: any) => void;
   subscribeEvent: (name: string, handler: (payload: any) => void) => () => void;
+
   resetLayout: () => void;
   settings: WorkspaceSettings;
-  updateSettings: (newSettings: Partial<WorkspaceSettings>) => void;
-  panesRegistry: PaneSummary[];
-  /** Read any pane's stored context for a tool, without mounting it. */
-  getPaneContext: (paneId: string, pluginType?: string) => any;
+  updateSettings: (patch: Partial<WorkspaceSettings>) => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(undefined);
@@ -50,29 +122,14 @@ const DEFAULT_LAYOUT: LayoutNode = {
   id: "split_root",
   direction: "horizontal",
   splitPercentage: 20,
-  left: {
-    type: "leaf",
-    id: "pane_explorer",
-    pluginType: "file-explorer",
-    state: {},
-  },
+  left: { type: "leaf", id: "frame_explorer", tool: "file-explorer", contexts: {} },
   right: {
     type: "split",
     id: "split_right",
     direction: "vertical",
     splitPercentage: 62,
-    left: {
-      type: "leaf",
-      id: "pane_editor",
-      pluginType: "editor",
-      state: {},
-    },
-    right: {
-      type: "leaf",
-      id: "pane_terminal",
-      pluginType: "terminal",
-      state: {},
-    },
+    left: { type: "leaf", id: "frame_editor", tool: "editor", contexts: {} },
+    right: { type: "leaf", id: "frame_terminal", tool: "terminal", contexts: {} },
   },
 };
 
@@ -81,63 +138,177 @@ const DEFAULT_SETTINGS: WorkspaceSettings = {
   tabSize: 2,
   autosave: true,
   showHidden: false,
-  theme: "dnet",
+  theme: "dark",
+  preset: "signal",
   rememberState: true,
+  defaultOpen: "current",
+  defaultSplit: "vertical",
+  apiEnabled: false,
+  apiPort: 8787,
+  apiToken: "",
+  apiAllowRemote: false,
 };
 
 const SETTINGS_KEY = "arclight_settings";
 const LAYOUT_KEY = "arclight_layout";
 
-export interface PaneSummary {
-  id: string;
-  pluginType: string;
-  isActive: boolean;
-  /** The active tool's context. */
-  state: any;
-  /** Every tool context this pane remembers, keyed by plugin type. */
-  contexts: Record<string, any>;
-  historyCount: number;
+// --- tree helpers ----------------------------------------------------------
+
+export function frameContext(frame: FrameLeaf): any {
+  return (frame.contexts || {})[frame.tool] || {};
 }
 
-/** Read the context a leaf holds for the tool it is currently showing. */
-export function leafContext(leaf: PaneLeaf): any {
-  return (leaf.contexts || {})[leaf.pluginType] || {};
+export function collectFrames(node: LayoutNode | null): FrameLeaf[] {
+  if (!node) return [];
+  if (node.type === "leaf") return [node];
+  return [...collectFrames(node.left), ...collectFrames(node.right)];
+}
+
+export function findFrame(node: LayoutNode | null, id: string): FrameLeaf | null {
+  if (!node) return null;
+  if (node.type === "leaf") return node.id === id ? node : null;
+  return findFrame(node.left, id) ?? findFrame(node.right, id);
+}
+
+function newId(prefix: string): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Strip the last path segment. Tolerates both separators. */
+function dirOf(filePath: string): string {
+  const norm = filePath.replace(/[\\/]+$/, "");
+  const idx = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));
+  if (idx <= 2) return norm.slice(0, idx + 1) || norm;
+  return norm.slice(0, idx);
+}
+
+/**
+ * The directory a frame is "at", whichever tool it happens to be showing.
+ *
+ * Lets a new tool pick up where the frame already was instead of dumping the
+ * user back at their home directory every time they split or switch tools.
+ */
+export function frameLocation(frame: FrameLeaf): string | undefined {
+  const contexts = frame.contexts || {};
+  const order = [frame.tool, "file-explorer", "terminal", "editor"];
+  for (const tool of order) {
+    const ctx = contexts[tool];
+    if (!ctx) continue;
+    if (ctx.currentPath) return ctx.currentPath;
+    if (ctx.terminalCwd) return ctx.terminalCwd;
+    if (ctx.filePath) return dirOf(ctx.filePath);
+  }
+  return undefined;
+}
+
+/**
+ * Seed a tool's context from where the frame already is.
+ *
+ * Switching a frame from explorer to terminal should open the shell in the
+ * directory the explorer was showing, not at the home directory.
+ */
+export function deriveContext(frame: FrameLeaf, tool: string): any {
+  const existing = (frame.contexts || {})[tool];
+  if (existing && Object.keys(existing).length > 0) return existing;
+
+  const location = frameLocation(frame);
+  if (!location) return {};
+
+  switch (tool) {
+    case "file-explorer":
+      return { currentPath: location };
+    case "terminal":
+      return { terminalCwd: location };
+    default:
+      return {};
+  }
+}
+
+/**
+ * The frame occupying the most screen area.
+ *
+ * Area is the product of the split fractions on the path down to the leaf,
+ * which tracks what is actually on screen without measuring the DOM. Opening
+ * into a new frame splits this one, so a new file lands in the roomiest place
+ * rather than bisecting whatever narrow sidebar happened to be focused.
+ */
+export function largestFrameId(node: LayoutNode | null): string | null {
+  let best: { id: string; area: number } | null = null;
+
+  const walk = (n: LayoutNode, area: number) => {
+    if (n.type === "leaf") {
+      if (!best || area > best.area) best = { id: n.id, area };
+      return;
+    }
+    const share = Math.min(100, Math.max(0, n.splitPercentage)) / 100;
+    walk(n.left, area * share);
+    walk(n.right, area * (1 - share));
+  };
+
+  if (node) walk(node, 1);
+  return best ? (best as { id: string; area: number }).id : null;
+}
+
+function clone<T>(value: T): T {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
 /**
  * Bring a persisted layout up to the current shape.
  *
- * Layouts saved before panes had per-tool contexts carry a single `state`
- * object plus history entries that embedded their own state. Both are folded
- * into `contexts` so an existing saved workspace keeps working.
+ * Handles two earlier generations: layouts with a single `state` blob instead
+ * of per-tool `contexts`, and layouts using `pluginType` before frames were
+ * called frames.
  */
 function migrateLayout(node: LayoutNode | null): LayoutNode | null {
   if (!node) return null;
+
   if (node.type === "split") {
-    return { ...node, left: migrateLayout(node.left)!, right: migrateLayout(node.right)! };
+    const left = migrateLayout(node.left);
+    const right = migrateLayout(node.right);
+    if (!left) return right;
+    if (!right) return left;
+    return { ...node, left, right };
   }
 
-  if (node.contexts) {
-    return node;
-  }
+  const tool = node.tool || node.pluginType || "file-explorer";
 
-  const contexts: Record<string, any> = {};
-  if (node.state && Object.keys(node.state).length > 0) {
-    contexts[node.pluginType] = node.state;
-  }
-  for (const entry of (node.history || []) as { pluginType: string; state?: any }[]) {
-    if (entry.state && !contexts[entry.pluginType]) {
-      contexts[entry.pluginType] = entry.state;
+  let contexts = node.contexts;
+  if (!contexts) {
+    contexts = {};
+    if (node.state && Object.keys(node.state).length > 0) {
+      contexts[tool] = node.state;
+    }
+    for (const entry of (node.history || []) as { tool?: string; pluginType?: string; state?: any }[]) {
+      const key = entry.tool || entry.pluginType;
+      if (key && entry.state && !contexts[key]) contexts[key] = entry.state;
     }
   }
 
-  const { state: _dropped, ...rest } = node;
   return {
-    ...rest,
+    type: "leaf",
+    id: node.id,
+    tool,
     contexts,
-    history: (node.history || []).map((h) => ({ pluginType: h.pluginType })),
+    history: (node.history || []).map((h: any) => ({ tool: h.tool || h.pluginType })).filter((h) => h.tool),
   };
 }
+
+/** Rewrite one leaf in place, returning the same tree object when nothing changed. */
+function mapFrame(
+  node: LayoutNode,
+  frameId: string,
+  fn: (frame: FrameLeaf) => FrameLeaf,
+): LayoutNode {
+  if (node.type === "leaf") {
+    return node.id === frameId ? fn(node) : node;
+  }
+  const left = mapFrame(node.left, frameId, fn);
+  const right = mapFrame(node.right, frameId, fn);
+  return left === node.left && right === node.right ? node : { ...node, left, right };
+}
+
+// --- provider --------------------------------------------------------------
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<WorkspaceSettings>(() => {
@@ -151,11 +322,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(() => {
     try {
-      const settingsSaved = localStorage.getItem(SETTINGS_KEY);
-      const parsedSettings = settingsSaved ? JSON.parse(settingsSaved) : null;
-      const remember = parsedSettings ? parsedSettings.rememberState !== false : true;
+      const savedSettings = localStorage.getItem(SETTINGS_KEY);
+      const remember = savedSettings ? JSON.parse(savedSettings).rememberState !== false : true;
       if (!remember) return DEFAULT_LAYOUT;
-
       const saved = localStorage.getItem(LAYOUT_KEY);
       return saved ? migrateLayout(JSON.parse(saved)) : DEFAULT_LAYOUT;
     } catch {
@@ -163,33 +332,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   });
 
-  const [activePaneId, setActivePaneId] = useState<string | null>(null);
-  const [lastActiveEditorId, setLastActiveEditorId] = useState<string | null>(null);
-  const [plugins, setPlugins] = useState<Record<string, PluginDefinition>>({});
-  const [panesRegistry, setPanesRegistry] = useState<PaneSummary[]>([]);
-  
-  const eventListeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
+  const [focusedFrameId, setFocusedFrameId] = useState<string | null>(null);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [tools, setTools] = useState<Record<string, ToolDefinition>>({});
 
-  // Update panes registry on layoutTree or activePaneId modification
-  useEffect(() => {
-    const getLeaves = (node: LayoutNode | null): PaneLeaf[] => {
-      if (!node) return [];
-      if (node.type === "leaf") return [node];
-      return [...getLeaves(node.left), ...getLeaves(node.right)];
-    };
-    const leaves = getLeaves(layoutTree);
-    const registry = leaves.map((leaf) => ({
-      id: leaf.id,
-      pluginType: leaf.pluginType,
-      isActive: leaf.id === activePaneId,
-      state: (leaf.contexts || {})[leaf.pluginType] || {},
-      contexts: leaf.contexts || {},
-      historyCount: leaf.history ? leaf.history.length : 0,
-    }));
-    setPanesRegistry(registry);
-  }, [layoutTree, activePaneId]);
+  const listeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
 
-  // Save layout tree on modification if rememberState is enabled
+  // Persist ---------------------------------------------------------------
   useEffect(() => {
     if (settings.rememberState && layoutTree) {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutTree));
@@ -198,408 +347,350 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [layoutTree, settings.rememberState]);
 
-  // Save settings on modification and apply theme body class
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    
-    // The theme class goes on <html>, not <body>, so that code reading tokens
-    // off documentElement (the terminal palette) sees the active theme.
+    // DSS reads these two attributes off <html>. Setting them here is the
+    // entire theming mechanism - no class juggling, no per-component work.
     const root = document.documentElement;
-    THEMES.forEach((t) => root.classList.remove(`theme-${t.id}`));
-    root.classList.add(`theme-${settings.theme || "dnet"}`);
+    root.setAttribute("data-theme", settings.theme || "dark");
+    root.setAttribute("data-dss-preset", settings.preset || "signal");
   }, [settings]);
 
-  // Event Broadcasting Implementation
+  // Drop focus/selection when the frame disappears.
+  useEffect(() => {
+    if (focusedFrameId && !findFrame(layoutTree, focusedFrameId)) setFocusedFrameId(null);
+    if (selectedFrameId && !findFrame(layoutTree, selectedFrameId)) setSelectedFrameId(null);
+  }, [layoutTree, focusedFrameId, selectedFrameId]);
+
+  // Events ----------------------------------------------------------------
   const emitEvent = useCallback((name: string, payload: any) => {
-    const listeners = eventListeners.current.get(name);
-    if (listeners) {
-      listeners.forEach((handler) => {
-        try {
-          handler(payload);
-        } catch (err) {
-          console.error(`Error broadcasting event '${name}':`, err);
-        }
-      });
-    }
+    listeners.current.get(name)?.forEach((handler) => {
+      try {
+        handler(payload);
+      } catch (err) {
+        console.error(`event '${name}' handler failed:`, err);
+      }
+    });
   }, []);
 
   const subscribeEvent = useCallback((name: string, handler: (payload: any) => void) => {
-    if (!eventListeners.current.has(name)) {
-      eventListeners.current.set(name, new Set());
-    }
-    eventListeners.current.get(name)!.add(handler);
-    
+    if (!listeners.current.has(name)) listeners.current.set(name, new Set());
+    listeners.current.get(name)!.add(handler);
     return () => {
-      const listeners = eventListeners.current.get(name);
-      if (listeners) {
-        listeners.delete(handler);
-        if (listeners.size === 0) {
-          eventListeners.current.delete(name);
-        }
-      }
+      const set = listeners.current.get(name);
+      if (!set) return;
+      set.delete(handler);
+      if (set.size === 0) listeners.current.delete(name);
     };
   }, []);
 
-  const registerPlugin = useCallback((plugin: PluginDefinition) => {
-    setPlugins((prev) => ({ ...prev, [plugin.type]: plugin }));
+  // Tools -----------------------------------------------------------------
+  const registerTool = useCallback((tool: ToolDefinition) => {
+    setTools((prev) => (prev[tool.type] === tool ? prev : { ...prev, [tool.type]: tool }));
   }, []);
 
-  const updateSettings = useCallback((newSettings: Partial<WorkspaceSettings>) => {
-    setSettings((prev) => ({ ...prev, ...newSettings }));
-  }, []);
+  // Frame mutations -------------------------------------------------------
+  const splitFrame = useCallback(
+    (frameId: string, direction: SplitDirection, tool: string, context?: any): string => {
+      const createdId = newId("frame");
 
-  // Recursive Splitting Helper
-  const splitPane = useCallback((paneId: string, direction: SplitDirection, newPluginType: string, initialState?: any) => {
-    const splitLeafInTree = (node: LayoutNode): LayoutNode => {
-      if (node.type === "leaf") {
-        if (node.id === paneId) {
-          const randId = Math.random().toString(36).substring(2, 7);
-          const deepClone = (obj: any) => {
-            if (!obj) return obj;
-            return JSON.parse(JSON.stringify(obj));
-          };
-          const leftLeaf: PaneLeaf = {
-            type: "leaf",
-            id: node.id,
-            pluginType: node.pluginType,
-            contexts: deepClone(node.contexts) || {},
-            history: deepClone(node.history) || [],
-          };
-          // The new pane seeds only the tool it is being opened as. Inheriting
-          // the source pane's whole state handed a terminal the editor's
-          // filePath and vice versa. History belongs to the original pane.
-          const seeded = initialState ? deepClone(initialState) : {};
-          const rightLeaf: PaneLeaf = {
-            type: "leaf",
-            id: `pane_${randId}`,
-            pluginType: newPluginType,
-            contexts: { [newPluginType]: seeded },
-            history: [],
-          };
-          return {
-            type: "split",
-            id: `split_${randId}`,
-            direction,
-            splitPercentage: 50,
-            left: leftLeaf,
-            right: rightLeaf,
-          };
+      setLayoutTree((prev) => {
+        // Without an explicit context, inherit where the source frame is, so a
+        // split opens beside you rather than back at the home directory.
+        const source = prev ? findFrame(prev, frameId) : null;
+        const seeded =
+          context !== undefined
+            ? clone(context)
+            : source
+              ? deriveContext(source, tool)
+              : {};
+        if (!prev) {
+          return { type: "leaf", id: createdId, tool, contexts: { [tool]: seeded } };
         }
-        return node;
-      } else {
-        return {
-          ...node,
-          left: splitLeafInTree(node.left),
-          right: splitLeafInTree(node.right),
-        };
-      }
-    };
 
-    setLayoutTree((prev) => {
-      if (!prev) {
-        return {
-          type: "leaf",
-          id: `pane_${Math.random().toString(36).substring(2, 7)}`,
-          pluginType: newPluginType,
-          state: {},
-        };
-      }
-      return splitLeafInTree(prev);
-    });
-  }, []);
-
-  // Recursive Close/Remove/Pop Helper
-  const closePane = useCallback((paneId: string) => {
-    const removeOrPopLeafFromTree = (node: LayoutNode): LayoutNode | null => {
-      if (node.type === "leaf") {
-        if (node.id === paneId) {
-          const history = node.history || [];
-          if (history.length > 0) {
-            const last = history[history.length - 1];
+        const split = (node: LayoutNode): LayoutNode => {
+          if (node.type === "leaf") {
+            if (node.id !== frameId) return node;
             return {
-              ...node,
-              pluginType: last.pluginType,
-              history: history.slice(0, -1),
+              type: "split",
+              id: newId("split"),
+              direction,
+              splitPercentage: 50,
+              left: { ...node },
+              // The new frame seeds only the tool it is opened as. Inheriting
+              // the source frame's whole context handed a terminal the
+              // editor's filePath and vice versa.
+              right: {
+                type: "leaf",
+                id: createdId,
+                tool,
+                contexts: { [tool]: seeded },
+                history: [],
+              },
             };
           }
-          return null; // Marks for removal
-        }
-        return node;
-      }
-      
-      const newLeft = removeOrPopLeafFromTree(node.left);
-      const newRight = removeOrPopLeafFromTree(node.right);
-      
-      if (newLeft === null) return newRight;
-      if (newRight === null) return newLeft;
-      
-      return {
-        ...node,
-        left: newLeft,
-        right: newRight,
-      };
-    };
-
-    setLayoutTree((prev) => {
-      if (!prev) return null;
-      return removeOrPopLeafFromTree(prev);
-    });
-  }, []);
-
-  const setPanePlugin = useCallback((paneId: string, pluginType: string) => {
-    const updateLeafPlugin = (node: LayoutNode): LayoutNode => {
-      if (node.type === "leaf") {
-        if (node.id === paneId) {
-          // Contexts are preserved. Switching explorer -> terminal -> explorer
-          // returns the explorer to the directory it was showing.
-          return { ...node, pluginType };
-        }
-        return node;
-      }
-      return {
-        ...node,
-        left: updateLeafPlugin(node.left),
-        right: updateLeafPlugin(node.right),
-      };
-    };
-    setLayoutTree((prev) => {
-      if (!prev) return null;
-      return updateLeafPlugin(prev);
-    });
-  }, []);
-
-  const setPaneState = useCallback((paneId: string, state: any) => {
-    const updateLeafState = (node: LayoutNode): LayoutNode => {
-      if (node.type === "leaf") {
-        if (node.id === paneId) {
-          const contexts = node.contexts || {};
-          const current = contexts[node.pluginType] || {};
-          const isSame = Object.keys(state).every((k) => current[k] === state[k]);
-          if (isSame) return node;
-          return {
-            ...node,
-            contexts: {
-              ...contexts,
-              [node.pluginType]: { ...current, ...state },
-            },
-          };
-        }
-        return node;
-      }
-      
-      const left = updateLeafState(node.left);
-      const right = updateLeafState(node.right);
-      
-      if (left === node.left && right === node.right) {
-        return node;
-      }
-      
-      return {
-        ...node,
-        left,
-        right,
-      };
-    };
-    setLayoutTree((prev) => {
-      if (!prev) return null;
-      const updated = updateLeafState(prev);
-      return updated === prev ? prev : updated;
-    });
-  }, []);
-
-  const updateSplitPercentage = useCallback((parentId: string, percentage: number) => {
-    const updatePercentage = (node: LayoutNode): LayoutNode => {
-      if (node.type === "leaf") return node;
-      if (node.id === parentId) {
-        return {
-          ...node,
-          splitPercentage: Math.max(10, Math.min(90, percentage)),
+          const left = split(node.left);
+          const right = split(node.right);
+          return left === node.left && right === node.right ? node : { ...node, left, right };
         };
-      }
-      return {
-        ...node,
-        left: updatePercentage(node.left),
-        right: updatePercentage(node.right),
-      };
-    };
+
+        return split(prev);
+      });
+
+      return createdId;
+    },
+    [],
+  );
+
+  const closeFrame = useCallback((frameId: string) => {
     setLayoutTree((prev) => {
       if (!prev) return null;
-      return updatePercentage(prev);
+
+      const remove = (node: LayoutNode): LayoutNode | null => {
+        if (node.type === "leaf") {
+          if (node.id !== frameId) return node;
+          const history = node.history || [];
+          if (history.length > 0) {
+            // Popping history restores a previous tool; its context is still
+            // held by the frame, so it comes back where it was.
+            return { ...node, tool: history[history.length - 1].tool, history: history.slice(0, -1) };
+          }
+          return null;
+        }
+        const left = remove(node.left);
+        const right = remove(node.right);
+        if (!left) return right;
+        if (!right) return left;
+        return left === node.left && right === node.right ? node : { ...node, left, right };
+      };
+
+      return remove(prev);
     });
   }, []);
 
-  const resetLayout = useCallback(() => {
-    setLayoutTree(DEFAULT_LAYOUT);
+  const setFrameTool = useCallback((frameId: string, tool: string) => {
+    setLayoutTree((prev) =>
+      prev
+        ? mapFrame(prev, frameId, (frame) => {
+            if (frame.tool === tool) return frame;
+            // Contexts are preserved, so explorer -> terminal -> explorer
+            // returns the explorer to the directory it was showing. A tool
+            // being opened here for the first time inherits the frame's
+            // current location rather than starting at the home directory.
+            const seeded = deriveContext(frame, tool);
+            return {
+              ...frame,
+              tool,
+              contexts: { ...(frame.contexts || {}), [tool]: seeded },
+            };
+          })
+        : prev,
+    );
   }, []);
 
-  // Independent / Targeted File Opening to Specific Editor
-  useEffect(() => {
-    const handleOpenFileEvent = (payload: any) => {
-      if (!layoutTree) {
-        setLayoutTree({
-          type: "leaf",
-          id: "pane_editor_init",
-          pluginType: "editor",
-          contexts: { editor: { filePath: payload.path } },
-        });
-        setActivePaneId("pane_editor_init");
-        setLastActiveEditorId("pane_editor_init");
+  const setFrameContext = useCallback((frameId: string, patch: Record<string, unknown>) => {
+    setLayoutTree((prev) =>
+      prev
+        ? mapFrame(prev, frameId, (frame) => {
+            const contexts = frame.contexts || {};
+            const current = contexts[frame.tool] || {};
+            const unchanged = Object.keys(patch).every((k) => current[k] === patch[k]);
+            if (unchanged) return frame;
+            return {
+              ...frame,
+              contexts: { ...contexts, [frame.tool]: { ...current, ...patch } },
+            };
+          })
+        : prev,
+    );
+  }, []);
+
+  /**
+   * Exchange the positions of two frames.
+   *
+   * Swapping whole leaves keeps every context, tool and history intact, so a
+   * rearrangement never costs you a running shell or an editor's file.
+   */
+  const swapFrames = useCallback((a: string, b: string) => {
+    if (a === b) return;
+    setLayoutTree((prev) => {
+      if (!prev) return prev;
+
+      const first = findFrame(prev, a);
+      const second = findFrame(prev, b);
+      if (!first || !second) return prev;
+
+      const replace = (node: LayoutNode): LayoutNode => {
+        if (node.type === "leaf") {
+          if (node.id === a) return second;
+          if (node.id === b) return first;
+          return node;
+        }
+        return { ...node, left: replace(node.left), right: replace(node.right) };
+      };
+
+      return replace(prev);
+    });
+  }, []);
+
+  const setSplitPercentage = useCallback((splitId: string, percentage: number) => {
+    setLayoutTree((prev) => {
+      if (!prev) return null;
+      const apply = (node: LayoutNode): LayoutNode => {
+        if (node.type === "leaf") return node;
+        if (node.id === splitId) {
+          return { ...node, splitPercentage: Math.min(92, Math.max(8, percentage)) };
+        }
+        return { ...node, left: apply(node.left), right: apply(node.right) };
+      };
+      return apply(prev);
+    });
+  }, []);
+
+  // Derived ---------------------------------------------------------------
+  const frames = useMemo<FrameSummary[]>(
+    () =>
+      collectFrames(layoutTree).map((frame) => ({
+        id: frame.id,
+        tool: frame.tool,
+        focused: frame.id === focusedFrameId,
+        selected: frame.id === selectedFrameId,
+        context: frameContext(frame),
+        contexts: frame.contexts || {},
+        historyCount: frame.history?.length ?? 0,
+      })),
+    [layoutTree, focusedFrameId, selectedFrameId],
+  );
+
+  const getFrameContext = useCallback(
+    (frameId: string, tool?: string) => {
+      const frame = findFrame(layoutTree, frameId);
+      if (!frame) return undefined;
+      return tool ? (frame.contexts || {})[tool] : frameContext(frame);
+    },
+    [layoutTree],
+  );
+
+  // Selection -------------------------------------------------------------
+  const focusFrame = useCallback((id: string | null) => setFocusedFrameId(id), []);
+  const selectFrame = useCallback((id: string | null) => setSelectedFrameId(id), []);
+  const toggleSelectFrame = useCallback(
+    (id: string) => setSelectedFrameId((prev) => (prev === id ? null : id)),
+    [],
+  );
+
+  // Opening ---------------------------------------------------------------
+  const resolveOpenTarget = useCallback(
+    (target?: OpenTarget): { frameId: string | null; willCreate: boolean } => {
+      // 1. An explicit frame always wins.
+      if (target?.frameId) return { frameId: target.frameId, willCreate: false };
+      // 2. An explicit request for a new frame.
+      if (target?.newFrame) return { frameId: null, willCreate: true };
+      // 3. A selected frame is the standing target.
+      if (selectedFrameId && findFrame(layoutTree, selectedFrameId)) {
+        return { frameId: selectedFrameId, willCreate: false };
+      }
+      // 4. Nothing selected: fall back to the configured default.
+      if (settings.defaultOpen === "new") return { frameId: null, willCreate: true };
+      return { frameId: target?.sourceFrameId ?? focusedFrameId, willCreate: false };
+    },
+    [selectedFrameId, focusedFrameId, layoutTree, settings.defaultOpen],
+  );
+
+  const openFile = useCallback(
+    (path: string, target?: OpenTarget) => {
+      const { frameId, willCreate } = resolveOpenTarget(target);
+
+      if (willCreate) {
+        // Split the roomiest frame, not whichever one happened to be focused.
+        // Opening from a narrow explorer sidebar otherwise bisected the
+        // sidebar and produced two unusably thin frames.
+        const origin =
+          largestFrameId(layoutTree) ??
+          target?.sourceFrameId ??
+          selectedFrameId ??
+          focusedFrameId ??
+          collectFrames(layoutTree)[0]?.id;
+        if (!origin) {
+          setLayoutTree({
+            type: "leaf",
+            id: newId("frame"),
+            tool: "editor",
+            contexts: { editor: { filePath: path } },
+          });
+          return;
+        }
+        const created = splitFrame(
+          origin,
+          target?.direction ?? settings.defaultSplit,
+          "editor",
+          { filePath: path },
+        );
+        setFocusedFrameId(created);
         return;
       }
 
-      // Local helper to find node by ID
-      const findNodeById = (node: LayoutNode, id: string): PaneLeaf | null => {
-        if (node.type === "leaf") {
-          return node.id === id ? node : null;
-        }
-        return findNodeById(node.left, id) || findNodeById(node.right, id);
-      };
+      if (!frameId) return;
 
-      const convertPaneToEditor = (paneId: string, filePath: string) => {
-        setLayoutTree((prev) => {
-          if (!prev) return null;
-          const targetWithHistory = (node: LayoutNode): LayoutNode => {
-            if (node.type === "leaf") {
-              if (node.id === paneId) {
-                const currentHistory = node.history || [];
-                const updatedHistory = [...currentHistory, { pluginType: node.pluginType }];
-                return {
-                  ...node,
-                  pluginType: "editor",
-                  contexts: {
-                    ...(node.contexts || {}),
-                    editor: { ...((node.contexts || {}).editor || {}), filePath },
-                  },
-                  history: updatedHistory,
-                };
-              }
-              return node;
-            }
-            return {
-              ...node,
-              left: targetWithHistory(node.left),
-              right: targetWithHistory(node.right),
-            };
-          };
-          return targetWithHistory(prev);
-        });
-        setActivePaneId(paneId);
-        setLastActiveEditorId(paneId);
-      };
-
-      const sourcePaneId = payload.sourcePaneId;
-      const explicitTargetPaneId = payload.targetPaneId;
-
-      // Case A: Explicit target node specified (e.g. from context menu "Open in Node...")
-      if (explicitTargetPaneId) {
-        const targetNode = findNodeById(layoutTree, explicitTargetPaneId);
-        if (targetNode) {
-          if (targetNode.pluginType === "editor") {
-            setPaneState(explicitTargetPaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
-          } else {
-            convertPaneToEditor(explicitTargetPaneId, payload.path);
-          }
-          setActivePaneId(explicitTargetPaneId);
-          setLastActiveEditorId(explicitTargetPaneId);
-          return;
-        }
-      }
-
-      // Case B: Highlighted/Selected pane that is NOT a file explorer
-      if (activePaneId) {
-        const activeNode = findNodeById(layoutTree, activePaneId);
-        if (activeNode && activeNode.pluginType !== "file-explorer") {
-          if (activeNode.pluginType === "editor") {
-            setPaneState(activePaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
-          } else {
-            convertPaneToEditor(activePaneId, payload.path);
-          }
-          setActivePaneId(activePaneId);
-          setLastActiveEditorId(activePaneId);
-          return;
-        }
-      }
-
-      // Case C: No other valid pane highlighted/selected first -> Open in the source explorer pane ("same pane")
-      if (sourcePaneId) {
-        const sourceNode = findNodeById(layoutTree, sourcePaneId);
-        if (sourceNode) {
-          if (sourceNode.pluginType === "editor") {
-            setPaneState(sourcePaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
-          } else {
-            convertPaneToEditor(sourcePaneId, payload.path);
-          }
-          setActivePaneId(sourcePaneId);
-          setLastActiveEditorId(sourcePaneId);
-          return;
-        }
-      }
-
-      // Case D: Fallback to first available editor, or split if none
-      let targetPaneId: string | null = null;
-      if (lastActiveEditorId) {
-        const activeNode = findNodeById(layoutTree, lastActiveEditorId);
-        if (activeNode && activeNode.pluginType === "editor") {
-          targetPaneId = lastActiveEditorId;
-        }
-      }
-
-      if (!targetPaneId) {
-        const findFirstEditor = (node: LayoutNode): string | null => {
-          if (node.type === "leaf") {
-            return node.pluginType === "editor" ? node.id : null;
-          }
-          return findFirstEditor(node.left) || findFirstEditor(node.right);
-        };
-        targetPaneId = findFirstEditor(layoutTree);
-      }
-
-      if (targetPaneId) {
-        setPaneState(targetPaneId, { filePath: payload.path, fileContent: undefined, isDirty: false });
-        setActivePaneId(targetPaneId);
-        setLastActiveEditorId(targetPaneId);
-      } else {
-        const paneToSplit = activePaneId || "pane_explorer";
-        splitPane(paneToSplit, "horizontal", "editor", { filePath: payload.path });
-      }
-    };
-
-    const unsubscribe = subscribeEvent("open-file", handleOpenFileEvent);
-    return unsubscribe;
-  }, [layoutTree, activePaneId, lastActiveEditorId, subscribeEvent, setPanePlugin, splitPane, setPaneState]);
-
-  const getPaneContext = useCallback(
-    (paneId: string, pluginType?: string) => {
-      const pane = panesRegistry.find((p) => p.id === paneId);
-      if (!pane) return undefined;
-      return pluginType ? pane.contexts[pluginType] : pane.state;
+      // Switching an existing frame to the editor records what it was showing,
+      // so closing the frame pops back to it.
+      setLayoutTree((prev) =>
+        prev
+          ? mapFrame(prev, frameId, (frame) => ({
+              ...frame,
+              tool: "editor",
+              history:
+                frame.tool === "editor"
+                  ? frame.history || []
+                  : [...(frame.history || []), { tool: frame.tool }],
+              contexts: {
+                ...(frame.contexts || {}),
+                editor: { ...((frame.contexts || {}).editor || {}), filePath: path },
+              },
+            }))
+          : prev,
+      );
+      setFocusedFrameId(frameId);
     },
-    [panesRegistry],
+    [resolveOpenTarget, splitFrame, layoutTree, selectedFrameId, focusedFrameId, settings.defaultSplit],
   );
+
+  const resetLayout = useCallback(() => {
+    setLayoutTree(DEFAULT_LAYOUT);
+    setSelectedFrameId(null);
+  }, []);
+
+  const updateSettings = useCallback((patch: Partial<WorkspaceSettings>) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   return (
     <WorkspaceContext.Provider
       value={{
         layoutTree,
         setLayoutTree,
-        activePaneId,
-        setActivePaneId,
-        lastActiveEditorId,
-        setLastActiveEditorId,
-        plugins,
-        registerPlugin,
-        splitPane,
-        closePane,
-        setPanePlugin,
-        setPaneState,
-        updateSplitPercentage,
+        focusedFrameId,
+        focusFrame,
+        selectedFrameId,
+        selectFrame,
+        toggleSelectFrame,
+        tools,
+        registerTool,
+        frames,
+        getFrameContext,
+        splitFrame,
+        closeFrame,
+        swapFrames,
+        setFrameTool,
+        setFrameContext,
+        setSplitPercentage,
+        resolveOpenTarget,
+        openFile,
         emitEvent,
         subscribeEvent,
         resetLayout,
         settings,
         updateSettings,
-        panesRegistry,
-        getPaneContext,
       }}
     >
       {children}
@@ -608,9 +699,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 };
 
 export const useWorkspace = () => {
-  const context = useContext(WorkspaceContext);
-  if (context === undefined) {
-    throw new Error("useWorkspace must be used within a WorkspaceProvider");
-  }
-  return context;
+  const ctx = useContext(WorkspaceContext);
+  if (!ctx) throw new Error("useWorkspace must be used inside a WorkspaceProvider");
+  return ctx;
 };

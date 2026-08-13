@@ -6,35 +6,45 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
 import { useWorkspace } from "../context/WorkspaceContext";
+import type { ToolProps } from "../types";
 import { pty, errorText, type ShellOption } from "../lib/api";
 import { readTerminalTheme } from "../lib/terminalTheme";
 import { runCustomCommand, matchCustomCommand, COMMAND_PREFIX } from "../lib/customCommands";
 
+const ESC = String.fromCharCode(27);
+const CR = "\r";
+const LF = "\n";
+const BACKSPACE = String.fromCharCode(127);
+const CTRL_C = String.fromCharCode(3);
+/** Back up one column, overwrite with a space, back up again. */
+const ERASE = "\b \b";
+
+const RED = 31;
+const YELLOW = 33;
+
+/** Wrap text in an SGR colour so status lines stand out in the scrollback. */
+const sgr = (code: number, text: string) => `${ESC}[${code}m${text}${ESC}[0m`;
+
 /**
- * The terminal is a view onto a session that lives in the Rust backend.
+ * A view onto a shell session that lives in the Rust backend.
  *
  * The component owns no shell state. Unmounting detaches; it does not kill.
- * That is why a layout change, a hot reload, or a font-size change no longer
- * destroys your shell — the previous implementation kept sessions in a module
- * map guarded by a 3-second timer and tore down on any of those.
+ * A layout change, a tool switch, a hot reload or a font-size change therefore
+ * leave the shell running, and remounting replays its scrollback.
  */
-export const TerminalPane: React.FC<{
-  paneId: string;
-  state: { terminalCwd?: string; shell?: string };
-  updateState: (state: Record<string, unknown>) => void;
-}> = ({ paneId, state, updateState }) => {
+export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext }) => {
   const workspace = useWorkspace();
-  const { settings, setActivePaneId } = workspace;
+  const { settings } = workspace;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const sessionId = `pty-${paneId}`;
+  const sessionId = `pty-${frameId}`;
 
-  const [cwd, setCwd] = useState(state.terminalCwd ?? "");
+  const [cwd, setCwd] = useState<string>(context.terminalCwd ?? "");
   const [alive, setAlive] = useState(false);
   const [shells, setShells] = useState<ShellOption[]>([]);
-  const [shell, setShell] = useState(state.shell ?? "cmd");
+  const [shell, setShell] = useState<string>(context.shell ?? "cmd");
   const [generation, setGeneration] = useState(0);
 
   // Latest values for use inside long-lived xterm callbacks, which capture
@@ -49,8 +59,8 @@ export const TerminalPane: React.FC<{
   }, []);
 
   useEffect(() => {
-    updateState({ terminalCwd: cwd, shell });
-  }, [cwd, shell, updateState]);
+    setContext({ terminalCwd: cwd, shell });
+  }, [cwd, shell, setContext]);
 
   // --- session lifecycle ---------------------------------------------------
   useEffect(() => {
@@ -65,10 +75,8 @@ export const TerminalPane: React.FC<{
       fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
       fontSize: settings.fontSize ?? 13,
       lineHeight: 1.25,
-      letterSpacing: 0,
       scrollback: 10000,
       allowProposedApi: true,
-      macOptionIsMeta: true,
       theme: readTerminalTheme(),
     });
 
@@ -83,42 +91,27 @@ export const TerminalPane: React.FC<{
     try {
       fit.fit();
     } catch {
-      /* container not laid out yet; sizes are clamped below */
+      /* not laid out yet; sizes are clamped below */
     }
 
     const decoder = new TextDecoder("utf-8", { fatal: false });
 
-    // A pane created by a split has not been laid out when this runs, so
+    // A frame created by a split has not been laid out when this runs, so
     // fit() reports 0 columns. Handing ConPTY a zero-size window leaves the
-    // shell started but never drawing — which looked like "the terminal never
-    // starts". Clamp to a usable size; the ResizeObserver corrects it as soon
-    // as the split has real dimensions.
+    // shell running but never drawing.
     const cols = Math.max(term.cols || 0, 20);
     const rows = Math.max(term.rows || 0, 5);
 
-    // cwdRef holds the directory the shell last reported, which survives a
-    // restart because only the effect re-runs, not the component. Falling back
-    // to the stored context covers a cold start.
-    const startCwd = cwdRef.current || state.terminalCwd || undefined;
+    const startCwd = cwdRef.current || context.terminalCwd || undefined;
 
     pty
-      .spawn(
-        {
-          id: sessionId,
-          cwd: startCwd,
-          cols,
-          rows,
-          shell,
-        },
-        (bytes) => {
-          if (!disposed) term.write(decoder.decode(bytes, { stream: true }));
-        },
-      )
+      .spawn({ id: sessionId, cwd: startCwd, cols, rows, shell }, (bytes) => {
+        if (!disposed) term.write(decoder.decode(bytes, { stream: true }));
+      })
       .then((info) => {
         if (disposed) return;
         setAlive(true);
         setCwd(info.cwd);
-        // Re-fit once the browser has laid the pane out for real.
         requestAnimationFrame(() => {
           if (disposed) return;
           try {
@@ -130,32 +123,30 @@ export const TerminalPane: React.FC<{
       })
       .catch((err) => {
         if (disposed) return;
-        term.write(`\r\n\x1b[31m${errorText(err)}\x1b[0m\r\n`);
+        term.write(CR + LF + sgr(RED, errorText(err)) + CR + LF);
         setAlive(false);
       });
 
-    // Keystrokes.
+    // --- input -------------------------------------------------------------
     //
     // A `dnet` line must never reach the shell, or cmd answers with "'dnet' is
-    // not recognized". Since we cannot know what a line is until enough of it
-    // is typed, input at the start of a line is *held* while it could still
-    // become `dnet`, echoed locally so typing feels immediate. The moment it
-    // cannot be, the held characters are flushed to the shell and we go back to
-    // pass-through for the rest of the line.
-    //
-    // Worst case is four held characters, and only at a line start.
+    // not recognized". We cannot know what a line is until enough of it is
+    // typed, so input at the start of a line is held while it could still
+    // become `dnet`, echoed locally so typing stays responsive. The moment it
+    // cannot be, the held characters are flushed and the rest of the line
+    // passes straight through. At most four characters are ever held, and only
+    // at the start of a line.
     type Phase = "holding" | "passthrough" | "command";
     let phase: Phase = "holding";
     let held = "";
     let line = "";
 
-    const send = (data: string) => {
-      void pty.write(sessionId, data).catch(() => setAlive(false));
+    const send = (text: string) => {
+      void pty.write(sessionId, text).catch(() => setAlive(false));
     };
 
-    /** Give up on `dnet`: erase the local echo and hand the shell everything. */
     const flushHeld = (andThen: string) => {
-      if (held) term.write("\b \b".repeat(held.length));
+      if (held) term.write(ERASE.repeat(held.length));
       const payload = held + andThen;
       held = "";
       phase = "passthrough";
@@ -169,119 +160,123 @@ export const TerminalPane: React.FC<{
       phase = "holding";
       if (!matched) return;
 
-      term.write("\r\n");
+      term.write(CR + LF);
       void runCustomCommand(matched, {
         cwd: cwdRef.current,
-        paneId,
+        frameId,
         sessionId,
         workspace: workspaceRef.current,
-        print: (text) => term.write(text.replace(/\r?\n/g, "\r\n")),
+        print: (text) => term.write(text.replace(/\r?\n/g, CR + LF)),
       }).finally(() => {
         // The shell never saw the command, so nudge it to redraw its prompt.
-        send("\r");
+        send(CR);
       });
     };
 
-    const dataSub = term.onData((data) => {
-      // Escape sequences and pastes are never dnet commands.
-      if (data.startsWith("\x1b") || data.length > 1) {
-        if (phase === "command") {
-          if (data.startsWith("\x1b")) return; // ignore arrows mid-command
-          line += data;
-          term.write(data);
-          return;
-        }
-        flushHeld(data);
-        return;
-      }
-
+    /** Feed exactly one character through the state machine. */
+    const consume = (ch: string) => {
       if (phase === "command") {
-        if (data === "\r") {
+        if (ch === CR || ch === LF) {
           execute();
-        } else if (data === "\x7f") {
+        } else if (ch === BACKSPACE) {
           if (line.length > 0) {
             line = line.slice(0, -1);
-            term.write("\b \b");
+            term.write(ERASE);
           }
           if (line.length === 0) phase = "holding";
-        } else if (data === "\x03") {
-          term.write("^C\r\n");
+        } else if (ch === CTRL_C) {
+          term.write(`^C${CR}${LF}`);
           line = "";
           held = "";
           phase = "holding";
-          send("\r");
-        } else if (data >= " ") {
-          line += data;
-          term.write(data);
+          send(CR);
+        } else if (ch >= " ") {
+          line += ch;
+          term.write(ch);
         }
         return;
       }
 
       if (phase === "passthrough") {
-        if (data === "\r") phase = "holding";
-        send(data);
+        if (ch === CR || ch === LF) phase = "holding";
+        send(ch);
         return;
       }
 
       // phase === "holding"
-      if (data === "\r") {
+      if (ch === CR || ch === LF) {
         if (held === COMMAND_PREFIX) {
           line = held;
           execute();
         } else {
-          flushHeld("\r");
+          flushHeld(ch);
           phase = "holding";
         }
         return;
       }
 
-      if (data === "\x7f") {
+      if (ch === BACKSPACE) {
         if (held.length > 0) {
           held = held.slice(0, -1);
-          term.write("\b \b");
+          term.write(ERASE);
         } else {
-          send(data);
+          send(ch);
         }
         return;
       }
 
-      if (data === "\x03") {
-        if (held) term.write("\b \b".repeat(held.length));
+      if (ch === CTRL_C) {
+        if (held) term.write(ERASE.repeat(held.length));
         held = "";
-        send(data);
+        phase = "passthrough";
+        send(ch);
         return;
       }
 
-      if (data < " ") {
-        flushHeld(data);
+      if (ch < " ") {
+        flushHeld(ch);
         return;
       }
 
-      const candidate = held + data;
-      if (candidate === `${COMMAND_PREFIX} ` || candidate.startsWith(`${COMMAND_PREFIX} `)) {
-        // Confirmed ours for the rest of this line.
+      const candidate = held + ch;
+      if (candidate.startsWith(COMMAND_PREFIX + " ")) {
         phase = "command";
         line = candidate;
         held = "";
-        term.write(data);
+        term.write(ch);
       } else if (COMMAND_PREFIX.startsWith(candidate)) {
-        // Still could be `dnet` — hold and echo.
         held = candidate;
-        term.write(data);
+        term.write(ch);
       } else {
-        flushHeld(data);
+        flushHeld(ch);
       }
+    };
+
+    const dataSub = term.onData((data) => {
+      // An escape sequence is one indivisible unit and never a dnet line.
+      if (data.startsWith(ESC)) {
+        if (phase === "command") return; // arrows mid-command would corrupt it
+        flushHeld(data);
+        return;
+      }
+
+      // Everything else goes through character by character. xterm batches
+      // fast typing and pastes into a single onData call, so treating any
+      // multi-character payload as a paste sent "dn" straight to the shell the
+      // moment someone typed at speed - which is why `dnet` only ever worked
+      // when typed slowly.
+      for (const ch of data) consume(ch);
     });
 
-    const resizeSub = term.onResize(({ cols, rows }) => {
-      void pty.resize(sessionId, cols, rows).catch(() => {});
+    const resizeSub = term.onResize(({ cols: c, rows: r }) => {
+      void pty.resize(sessionId, c, r).catch(() => {});
     });
 
     const observer = new ResizeObserver(() => {
       try {
         fit.fit();
       } catch {
-        /* pane is collapsed or hidden */
+        /* frame collapsed or hidden */
       }
     });
     observer.observe(container);
@@ -291,17 +286,17 @@ export const TerminalPane: React.FC<{
       observer.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
-      // Detach, do not kill. The shell keeps running in the backend and keeps
-      // buffering output; remounting replays it.
+      // Detach, do not kill. The shell keeps running and keeps buffering;
+      // remounting replays what it missed.
       void pty.detach(sessionId);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-    // `settings.fontSize` is deliberately absent: font changes are applied
-    // in place below rather than by rebuilding the session.
+    // settings.fontSize is deliberately absent: it is applied in place below
+    // rather than by rebuilding the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId, sessionId, shell, generation]);
+  }, [frameId, sessionId, shell, generation]);
 
   // Font size applied without touching the session.
   useEffect(() => {
@@ -319,14 +314,14 @@ export const TerminalPane: React.FC<{
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    // Wait a frame so the theme class is on <body> before variables are read.
     const id = requestAnimationFrame(() => {
       term.options.theme = readTerminalTheme();
     });
     return () => cancelAnimationFrame(id);
-  }, [settings.theme]);
+    // Presets move the palette as well as themes do.
+  }, [settings.theme, settings.preset]);
 
-  // Working directory, reported by the shell itself.
+  // Working directory, reported by the shell itself via OSC.
   useEffect(() => {
     const unlisten = pty.onCwdChange(({ id, cwd: next }) => {
       if (id === sessionId) setCwd(next);
@@ -340,30 +335,30 @@ export const TerminalPane: React.FC<{
     const unlisten = pty.onExit(({ id }) => {
       if (id !== sessionId) return;
       setAlive(false);
-      termRef.current?.write("\r\n\x1b[33m[shell exited]\x1b[0m\r\n");
+      termRef.current?.write(CR + LF + sgr(YELLOW, "[shell exited]") + CR + LF);
     });
     return () => {
       void unlisten.then((fn) => fn());
     };
   }, [sessionId]);
 
-  // External "cd here" requests from the file explorer.
+  // External "cd here" requests from the explorer.
   useEffect(() => {
     const unsubscribe = workspace.subscribeEvent(
       "change-terminal-cwd",
-      (data: { path?: string; paneId?: string }) => {
+      (data: { path?: string; frameId?: string }) => {
         if (!data?.path) return;
-        if (data.paneId && data.paneId !== paneId) return;
-        void pty.write(sessionId, `cd /d "${data.path}"\r`);
+        if (data.frameId && data.frameId !== frameId) return;
+        void pty.write(sessionId, `cd /d "${data.path}"${CR}`);
       },
     );
     return unsubscribe;
-  }, [workspace, paneId, sessionId]);
+  }, [workspace, frameId, sessionId]);
 
   const restart = useCallback(async () => {
     const here = cwdRef.current;
     termRef.current?.write(
-      `\r\n\x1b[33mrestarting shell${here ? ` in ${here}` : ""}…\x1b[0m\r\n`,
+      CR + LF + sgr(YELLOW, `restarting shell${here ? ` in ${here}` : ""}...`) + CR + LF,
     );
     await pty.kill(sessionId).catch(() => {});
     // The remounted effect reads cwdRef, so the new shell opens where the old
@@ -378,10 +373,7 @@ export const TerminalPane: React.FC<{
 
   return (
     <div
-      onMouseDown={() => {
-        setActivePaneId(paneId);
-        termRef.current?.focus();
-      }}
+      onMouseDown={() => termRef.current?.focus()}
       className="h-full flex flex-col overflow-hidden"
       style={{ backgroundColor: "var(--term-bg)" }}
     >
@@ -399,11 +391,11 @@ export const TerminalPane: React.FC<{
             className="flex-shrink-0"
           />
           <span
-            className="dss-label truncate"
-            style={{ color: "var(--dss-text-dim)", textTransform: "none", letterSpacing: 0 }}
+            className="truncate text-[11px]"
+            style={{ color: "var(--dss-text-dim)", fontFamily: "var(--dss-font-mono)" }}
             title={cwd}
           >
-            {cwd || "…"}
+            {cwd || "..."}
           </span>
         </div>
 

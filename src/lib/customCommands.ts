@@ -15,12 +15,13 @@
  * `print` writes to the terminal; use \n freely, it is converted to \r\n.
  */
 
+import { THEMES, PRESETS, type ThemeName, type PresetName } from "../context/WorkspaceContext";
 import type { useWorkspace } from "../context/WorkspaceContext";
 import { fs, paths, pty, systemInfo, errorText } from "./api";
 
 export interface CommandContext {
   cwd: string;
-  paneId: string;
+  frameId: string;
   sessionId: string;
   workspace: ReturnType<typeof useWorkspace>;
   print: (text: string) => void;
@@ -127,7 +128,7 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
 
   {
     name: "edit",
-    description: "Open a file in a new editor split",
+    description: "Open a file in a new frame",
     usage: "dnet edit <file> [-h|-v]",
     execute: (args, ctx) => {
       const files = args.filter((a) => !a.startsWith("-"));
@@ -139,14 +140,14 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
         ? "horizontal"
         : "vertical";
       const filePath = resolveArg(ctx, files[0]);
-      ctx.workspace.splitPane(ctx.paneId, direction, "editor", { filePath });
+      ctx.workspace.splitFrame(ctx.frameId, direction, "editor", { filePath });
       ctx.print(`${OK}opened${RESET} ${filePath}\n`);
     },
   },
 
   {
     name: "open",
-    description: "Open a file in the active editor pane",
+    description: "Open a file where the workspace routes it",
     usage: "dnet open <file>",
     execute: (args, ctx) => {
       if (!args[0]) {
@@ -154,10 +155,7 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
         return;
       }
       const filePath = resolveArg(ctx, args[0]);
-      ctx.workspace.emitEvent("open-file", {
-        path: filePath,
-        sourcePaneId: ctx.paneId,
-      });
+      ctx.workspace.openFile(filePath, { sourceFrameId: ctx.frameId });
       ctx.print(`${OK}opened${RESET} ${filePath}\n`);
     },
   },
@@ -170,7 +168,7 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
       const direction = args.some((a) => a === "-h" || a === "--horizontal")
         ? "horizontal"
         : "vertical";
-      ctx.workspace.splitPane(ctx.paneId, direction, "terminal", {
+      ctx.workspace.splitFrame(ctx.frameId, direction, "terminal", {
         terminalCwd: ctx.cwd,
       });
       ctx.print(`${OK}new ${direction} terminal${RESET}\n`);
@@ -185,7 +183,7 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
       const direction = args.some((a) => a === "-h" || a === "--horizontal")
         ? "horizontal"
         : "vertical";
-      ctx.workspace.splitPane(ctx.paneId, direction, "file-explorer", {
+      ctx.workspace.splitFrame(ctx.frameId, direction, "file-explorer", {
         currentPath: ctx.cwd,
       });
       ctx.print(`${OK}new explorer at${RESET} ${ctx.cwd}\n`);
@@ -205,11 +203,11 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
 
   {
     name: "theme",
-    description: "Switch theme (dnet | arc | light)",
-    usage: "dnet theme <name>",
+    description: "Switch theme (dark | light)",
+    usage: "dnet theme <dark | light>",
     execute: (args, ctx) => {
-      const allowed = ["dnet", "arc", "light"] as const;
-      const requested = args[0]?.toLowerCase() as (typeof allowed)[number];
+      const allowed = THEMES.map((t) => t.id);
+      const requested = args[0]?.toLowerCase() as ThemeName;
       if (!requested || !allowed.includes(requested)) {
         ctx.print(`${DIM}current: ${ctx.workspace.settings.theme}${RESET}\n`);
         ctx.print(`${DIM}available: ${allowed.join(", ")}${RESET}\n`);
@@ -217,6 +215,25 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
       }
       ctx.workspace.updateSettings({ theme: requested });
       ctx.print(`${OK}theme →${RESET} ${requested}\n`);
+    },
+  },
+
+  {
+    name: "preset",
+    description: "Switch the DSS preset",
+    usage: "dnet preset <signal | aero | softclub | eink | terminal>",
+    execute: (args, ctx) => {
+      const requested = args[0]?.toLowerCase() as PresetName;
+      const match = PRESETS.find((p) => p.id === requested);
+      if (!match) {
+        ctx.print(`${DIM}current: ${ctx.workspace.settings.preset}${RESET}\n`);
+        for (const p of PRESETS) {
+          ctx.print(`  ${ACCENT}${p.id.padEnd(10)}${RESET}${DIM}${p.description}${RESET}\n`);
+        }
+        return;
+      }
+      ctx.workspace.updateSettings({ preset: match.id });
+      ctx.print(`${OK}preset →${RESET} ${match.label}\n`);
     },
   },
 
@@ -253,41 +270,74 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
   },
 
   {
-    name: "panes",
-    description: "List the open panes and their ids",
-    usage: "dnet panes",
+    name: "frames",
+    description: "List the open frames and their ids",
+    usage: "dnet frames",
     execute: (_args, ctx) => {
-      const registry = ctx.workspace.panesRegistry ?? [];
+      const registry = ctx.workspace.frames;
       if (registry.length === 0) {
-        ctx.print(`${DIM}no panes${RESET}\n`);
+        ctx.print(`${DIM}no frames${RESET}\n`);
         return;
       }
       ctx.print(
-        `${DIM}${"ID".padEnd(20)}${"TOOL".padEnd(16)}${"ACTIVE".padEnd(8)}CONTEXT${RESET}\n`,
+        `${DIM}${"ID".padEnd(20)}${"TOOL".padEnd(16)}${"STATE".padEnd(8)}CONTEXT${RESET}\n`,
       );
-      for (const pane of registry) {
-        const context =
-          pane.state?.filePath ?? pane.state?.terminalCwd ?? pane.state?.currentPath ?? "-";
-        const active = pane.isActive ? `${ACCENT}yes${RESET}   ` : "no    ";
+      for (const frame of registry) {
+        const where =
+          frame.context?.filePath ?? frame.context?.terminalCwd ?? frame.context?.currentPath ?? "-";
+        const mark = frame.selected
+          ? `${ACCENT}target${RESET}`
+          : frame.focused
+            ? `${DIM}focus ${RESET}`
+            : "      ";
         ctx.print(
-          `${pane.id.padEnd(20)}${pane.pluginType.padEnd(16)}${active}${DIM}${context}${RESET}\n`,
+          `${frame.id.padEnd(20)}${frame.tool.padEnd(16)}${mark}  ${DIM}${where}${RESET}\n`,
         );
       }
     },
   },
 
   {
-    name: "close",
-    description: "Close a pane by id",
-    usage: "dnet close <paneId>",
+    name: "target",
+    description: "Select a frame as the destination for opened files",
+    usage: "dnet target <frameId | none>",
     execute: (args, ctx) => {
-      const target = args[0] ?? ctx.paneId;
-      const exists = (ctx.workspace.panesRegistry ?? []).some((p) => p.id === target);
+      const arg = args[0];
+      if (!arg) {
+        const current = ctx.workspace.selectedFrameId;
+        ctx.print(
+          current
+            ? `${ACCENT}${current}${RESET} ${DIM}is the open target${RESET}\n`
+            : `${DIM}no target; opens follow the '${ctx.workspace.settings.defaultOpen}' default${RESET}\n`,
+        );
+        return;
+      }
+      if (arg === "none" || arg === "clear") {
+        ctx.workspace.selectFrame(null);
+        ctx.print(`${OK}target released${RESET}\n`);
+        return;
+      }
+      if (!ctx.workspace.frames.some((f) => f.id === arg)) {
+        ctx.print(`${ERR}no frame '${arg}'${RESET}\n`);
+        return;
+      }
+      ctx.workspace.selectFrame(arg);
+      ctx.print(`${OK}target →${RESET} ${arg}\n`);
+    },
+  },
+
+  {
+    name: "close",
+    description: "Close a frame by id",
+    usage: "dnet close <frameId>",
+    execute: (args, ctx) => {
+      const target = args[0] ?? ctx.frameId;
+      const exists = ctx.workspace.frames.some((f) => f.id === target);
       if (!exists) {
         ctx.print(`${ERR}no pane '${target}'${RESET}\n`);
         return;
       }
-      ctx.workspace.closePane(target);
+      ctx.workspace.closeFrame(target);
       ctx.print(`${OK}closed${RESET} ${target}\n`);
     },
   },
@@ -339,7 +389,7 @@ export const CUSTOM_COMMANDS: CustomCommand[] = [
       row("cwd", ctx.cwd || "?");
       row("theme", ctx.workspace.settings.theme);
       row("font", `${ctx.workspace.settings.fontSize}px`);
-      row("panes", String((ctx.workspace.panesRegistry ?? []).length));
+      row("frames", String(ctx.workspace.frames.length));
     },
   },
 

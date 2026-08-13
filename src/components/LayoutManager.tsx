@@ -1,41 +1,37 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Columns, Layers, Maximize2, Minimize2, Rows, X } from "lucide-react";
+import { ArrowLeft, Columns, Crosshair, Layers, Maximize2, Minimize2, Rows, X } from "lucide-react";
 
-import { LayoutNode, PaneLeaf, PaneParent, PluginDefinition } from "../types";
-import { useWorkspace, leafContext } from "../context/WorkspaceContext";
-
-function findLeafNode(node: LayoutNode, id: string): PaneLeaf | null {
-  if (node.type === "leaf") return node.id === id ? node : null;
-  return findLeafNode(node.left, id) ?? findLeafNode(node.right, id);
-}
+import { FrameLeaf, FrameSplit, LayoutNode, ToolDefinition } from "../types";
+import { findFrame, frameContext, useWorkspace } from "../context/WorkspaceContext";
 
 export const FocusContext = React.createContext<{
-  maximizedPaneId: string | null;
-  toggleMaximize: (paneId: string) => void;
+  maximizedFrameId: string | null;
+  toggleMaximize: (frameId: string) => void;
 }>({
-  maximizedPaneId: null,
+  maximizedFrameId: null,
   toggleMaximize: () => {},
 });
 
 export const LayoutManager: React.FC = () => {
   const { layoutTree, setLayoutTree, resetLayout, subscribeEvent } = useWorkspace();
-  const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+  const [maximizedFrameId, setMaximizedFrameId] = useState<string | null>(null);
 
-  const toggleMaximize = useCallback((paneId: string) => {
-    setMaximizedPaneId((prev) => (prev === paneId ? null : paneId));
+  const toggleMaximize = useCallback((frameId: string) => {
+    setMaximizedFrameId((prev) => (prev === frameId ? null : frameId));
   }, []);
 
-  useEffect(() => {
-    return subscribeEvent("toggle-focus", (data: { paneId?: string }) => {
-      if (data?.paneId) toggleMaximize(data.paneId);
-    });
-  }, [subscribeEvent, toggleMaximize]);
+  useEffect(
+    () =>
+      subscribeEvent("toggle-focus", (data: { frameId?: string }) => {
+        if (data?.frameId) toggleMaximize(data.frameId);
+      }),
+    [subscribeEvent, toggleMaximize],
+  );
 
-  // Drop focus if the maximized pane disappeared.
   useEffect(() => {
-    if (!layoutTree || !maximizedPaneId) return;
-    if (!findLeafNode(layoutTree, maximizedPaneId)) setMaximizedPaneId(null);
-  }, [layoutTree, maximizedPaneId]);
+    if (!layoutTree || !maximizedFrameId) return;
+    if (!findFrame(layoutTree, maximizedFrameId)) setMaximizedFrameId(null);
+  }, [layoutTree, maximizedFrameId]);
 
   if (!layoutTree) {
     return (
@@ -52,16 +48,16 @@ export const LayoutManager: React.FC = () => {
           }}
         >
           <Layers size={26} style={{ color: "var(--dss-accent)" }} />
-          <span className="dss-label">Workspace empty</span>
+          <span className="dss-label">No frames open</span>
           <div className="flex gap-2">
             <button
               className="dss-button dss-button--ghost"
               onClick={() =>
                 setLayoutTree({
                   type: "leaf",
-                  id: "pane_explorer_init",
-                  pluginType: "file-explorer",
-                  state: {},
+                  id: "frame_explorer_init",
+                  tool: "file-explorer",
+                  contexts: {},
                 })
               }
             >
@@ -72,9 +68,9 @@ export const LayoutManager: React.FC = () => {
               onClick={() =>
                 setLayoutTree({
                   type: "leaf",
-                  id: "pane_terminal_init",
-                  pluginType: "terminal",
-                  state: {},
+                  id: "frame_terminal_init",
+                  tool: "terminal",
+                  contexts: {},
                 })
               }
             >
@@ -89,25 +85,25 @@ export const LayoutManager: React.FC = () => {
     );
   }
 
-  const focused = maximizedPaneId ? findLeafNode(layoutTree, maximizedPaneId) : null;
+  const maximized = maximizedFrameId ? findFrame(layoutTree, maximizedFrameId) : null;
 
   return (
-    <FocusContext.Provider value={{ maximizedPaneId, toggleMaximize }}>
+    <FocusContext.Provider value={{ maximizedFrameId, toggleMaximize }}>
       <div
         className="w-full h-full overflow-hidden"
         style={{ backgroundColor: "var(--dss-bg-app)", padding: 4 }}
       >
-        {focused ? <LeafNode node={focused} /> : <TreeNode node={layoutTree} />}
+        {maximized ? <Frame node={maximized} /> : <TreeNode node={layoutTree} />}
       </div>
     </FocusContext.Provider>
   );
 };
 
 const TreeNode: React.FC<{ node: LayoutNode }> = ({ node }) =>
-  node.type === "split" ? <SplitNode node={node} /> : <LeafNode node={node} />;
+  node.type === "split" ? <Split node={node} /> : <Frame node={node} />;
 
-const SplitNode: React.FC<{ node: PaneParent }> = ({ node }) => {
-  const { updateSplitPercentage } = useWorkspace();
+const Split: React.FC<{ node: FrameSplit }> = ({ node }) => {
+  const { setSplitPercentage } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -121,8 +117,7 @@ const SplitNode: React.FC<{ node: PaneParent }> = ({ node }) => {
         node.direction === "horizontal"
           ? ((e.clientX - rect.left) / rect.width) * 100
           : ((e.clientY - rect.top) / rect.height) * 100;
-      // Clamp so a pane can never be dragged to zero and become unrecoverable.
-      updateSplitPercentage(node.id, Math.min(92, Math.max(8, pct)));
+      setSplitPercentage(node.id, pct);
     };
     const onUp = () => setDragging(false);
 
@@ -132,7 +127,7 @@ const SplitNode: React.FC<{ node: PaneParent }> = ({ node }) => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dragging, node.direction, node.id, updateSplitPercentage]);
+  }, [dragging, node.direction, node.id, setSplitPercentage]);
 
   const pct = node.splitPercentage;
   const horizontal = node.direction === "horizontal";
@@ -174,21 +169,33 @@ const SplitNode: React.FC<{ node: PaneParent }> = ({ node }) => {
   );
 };
 
-const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
-  const { activePaneId, setActivePaneId, plugins, splitPane, closePane, setPanePlugin, setPaneState } =
-    useWorkspace();
-  const { maximizedPaneId, toggleMaximize } = React.useContext(FocusContext);
+const Frame: React.FC<{ node: FrameLeaf }> = ({ node }) => {
+  const {
+    focusedFrameId,
+    focusFrame,
+    selectedFrameId,
+    toggleSelectFrame,
+    tools,
+    splitFrame,
+    closeFrame,
+    swapFrames,
+    setFrameTool,
+    setFrameContext,
+  } = useWorkspace();
+  const { maximizedFrameId, toggleMaximize } = React.useContext(FocusContext);
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dropTarget, setDropTarget] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const isActive = activePaneId === node.id;
-  const isMaximized = maximizedPaneId === node.id;
-  const plugin = plugins[node.pluginType];
+  const focused = focusedFrameId === node.id;
+  const selected = selectedFrameId === node.id;
+  const maximized = maximizedFrameId === node.id;
+  const tool = tools[node.tool];
 
-  const updateState = useCallback(
-    (next: Record<string, unknown>) => setPaneState(node.id, next),
-    [node.id, setPaneState],
+  const setContext = useCallback(
+    (patch: Record<string, unknown>) => setFrameContext(node.id, patch),
+    [node.id, setFrameContext],
   );
 
   useEffect(() => {
@@ -203,31 +210,74 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
   return (
     <div className="h-full w-full p-[3px]">
       <div
-        onMouseDown={() => !isActive && setActivePaneId(node.id)}
-        className={`h-full flex flex-col min-h-0 overflow-hidden dss-cut-sm ${
-          isActive ? "dss-glow" : ""
-        }`}
+        className={`h-full flex flex-col min-h-0 overflow-hidden dss-cut-sm ${focused ? "dss-glow" : ""}`}
         style={{
           backgroundColor: "var(--dss-bg-panel)",
-          boxShadow: isActive ? undefined : "0 0 0 1px var(--dss-border-soft)",
+          boxShadow: selected
+            ? "0 0 0 2px var(--dss-accent-hot)"
+            : focused
+              ? undefined
+              : "0 0 0 1px var(--dss-border-soft)",
         }}
       >
-        {/* Pane header */}
+        {/* Header. Clicking the chrome selects this frame as the open target;
+            clicking the tool's content below only moves focus. */}
         <div
-          className="dss-chrome flex items-center justify-between px-1.5 py-[3px] flex-shrink-0"
+          className="dss-chrome flex items-center justify-between px-1.5 py-[3px] flex-shrink-0 cursor-pointer"
+          draggable
+          onMouseDown={() => focusFrame(node.id)}
+          onClick={() => toggleSelectFrame(node.id)}
+          title={
+            selected
+              ? "Selected as open target - click to release. Drag onto another frame to swap."
+              : "Click to target opens here. Drag onto another frame to swap."
+          }
+          onDragStart={(e) => {
+            e.dataTransfer.setData("application/x-arclight-frame", node.id);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragOver={(e) => {
+            const dragged = e.dataTransfer.types.includes("application/x-arclight-frame");
+            if (!dragged) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setDropTarget(true);
+          }}
+          onDragLeave={() => setDropTarget(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDropTarget(false);
+            const from = e.dataTransfer.getData("application/x-arclight-frame");
+            if (from && from !== node.id) swapFrames(from, node.id);
+          }}
           style={{
-            backgroundColor: isActive ? "var(--dss-bg-surface)" : "transparent",
-            borderBottom: "1px solid var(--dss-border-soft)",
+            backgroundColor: dropTarget
+              ? "color-mix(in srgb, var(--dss-accent) 30%, var(--dss-bg-surface))"
+              : selected
+                ? "color-mix(in srgb, var(--dss-accent-hot) 14%, var(--dss-bg-surface))"
+                : focused
+                  ? "var(--dss-bg-surface)"
+                  : "transparent",
+            borderBottom: dropTarget
+              ? "1px solid var(--dss-accent)"
+              : "1px solid var(--dss-border-soft)",
           }}
         >
           <div className="flex items-center gap-1 min-w-0">
+            {selected && (
+              <Crosshair
+                size={11}
+                className="flex-shrink-0"
+                style={{ color: "var(--dss-accent-hot)" }}
+              />
+            )}
             {node.history && node.history.length > 0 && (
               <button
                 className="dss-icon-button"
                 title="Back"
                 onClick={(e) => {
                   e.stopPropagation();
-                  closePane(node.id);
+                  closeFrame(node.id);
                 }}
               >
                 <ArrowLeft size={11} />
@@ -240,7 +290,11 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
                   background: "none",
                   border: "none",
                   cursor: "pointer",
-                  color: isActive ? "var(--dss-accent)" : "var(--dss-text-dim)",
+                  color: selected
+                    ? "var(--dss-accent-hot)"
+                    : focused
+                      ? "var(--dss-accent)"
+                      : "var(--dss-text-dim)",
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -248,7 +302,7 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
                 }}
                 title="Change tool"
               >
-                {plugin?.name ?? "select"}
+                {tool?.name ?? "select"}
                 <span style={{ fontSize: 7 }}>▼</span>
               </button>
 
@@ -262,30 +316,27 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
                     boxShadow: "0 0 0 1px var(--dss-border)",
                   }}
                 >
-                  {(Object.values(plugins) as PluginDefinition[]).map((p) => (
+                  {(Object.values(tools) as ToolDefinition[]).map((t) => (
                     <button
-                      key={p.type}
+                      key={t.type}
                       className="w-full text-left px-2.5 py-1.5 text-[11px]"
                       style={{
                         background: "none",
                         border: "none",
                         cursor: "pointer",
-                        color:
-                          node.pluginType === p.type ? "var(--dss-accent)" : "var(--dss-text)",
+                        color: node.tool === t.type ? "var(--dss-accent)" : "var(--dss-text)",
                       }}
                       onMouseEnter={(e) =>
                         (e.currentTarget.style.backgroundColor = "var(--dss-bg-input)")
                       }
-                      onMouseLeave={(e) =>
-                        (e.currentTarget.style.backgroundColor = "transparent")
-                      }
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setPanePlugin(node.id, p.type);
+                        setFrameTool(node.id, t.type);
                         setMenuOpen(false);
                       }}
                     >
-                      {p.name}
+                      {t.name}
                     </button>
                   ))}
                 </div>
@@ -294,25 +345,32 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
           </div>
 
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            <span
+              className="dss-label mr-1 hidden sm:inline"
+              style={{ fontSize: 8, opacity: 0.55 }}
+              title="Frame id, for dnet commands and the control API"
+            >
+              {node.id}
+            </span>
             <button
               className="dss-icon-button"
-              title={isMaximized ? "Restore" : "Maximize"}
+              title={maximized ? "Restore" : "Maximize"}
               onClick={(e) => {
                 e.stopPropagation();
                 toggleMaximize(node.id);
               }}
-              style={isMaximized ? { color: "var(--dss-accent)" } : undefined}
+              style={maximized ? { color: "var(--dss-accent)" } : undefined}
             >
-              {isMaximized ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+              {maximized ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
             </button>
-            {!isMaximized && (
+            {!maximized && (
               <>
                 <button
                   className="dss-icon-button"
                   title="Split right"
                   onClick={(e) => {
                     e.stopPropagation();
-                    splitPane(node.id, "horizontal", node.pluginType);
+                    splitFrame(node.id, "horizontal", node.tool, frameContext(node));
                   }}
                 >
                   <Columns size={11} />
@@ -322,17 +380,17 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
                   title="Split down"
                   onClick={(e) => {
                     e.stopPropagation();
-                    splitPane(node.id, "vertical", node.pluginType);
+                    splitFrame(node.id, "vertical", node.tool, frameContext(node));
                   }}
                 >
                   <Rows size={11} />
                 </button>
                 <button
                   className="dss-icon-button"
-                  title="Close pane"
+                  title="Close frame"
                   onClick={(e) => {
                     e.stopPropagation();
-                    closePane(node.id);
+                    closeFrame(node.id);
                   }}
                 >
                   <X size={11} />
@@ -342,16 +400,17 @@ const LeafNode: React.FC<{ node: PaneLeaf }> = ({ node }) => {
           </div>
         </div>
 
-        {/* Tool */}
-        <div className="flex-1 min-h-0 overflow-hidden relative">
-          {plugin ? (
-            // Keyed by tool so switching tools remounts cleanly while each
-            // tool's context survives in the pane.
-            <plugin.component
-              key={node.pluginType}
-              paneId={node.id}
-              state={leafContext(node)}
-              updateState={updateState}
+        {/* Tool content. Focus follows interaction here; selection does not. */}
+        <div
+          className="flex-1 min-h-0 overflow-hidden relative"
+          onMouseDown={() => focusFrame(node.id)}
+        >
+          {tool ? (
+            <tool.component
+              key={node.tool}
+              frameId={node.id}
+              context={frameContext(node)}
+              setContext={setContext}
             />
           ) : (
             <div

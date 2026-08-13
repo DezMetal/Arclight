@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { useWorkspace } from "../context/WorkspaceContext";
+import type { ToolProps } from "../types";
 import { fs, paths, errorText, type DriveInfo, type FileEntry } from "../lib/api";
 
 interface MenuState {
@@ -44,15 +45,11 @@ function formatSize(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
-export const FileExplorerPane: React.FC<{
-  paneId: string;
-  state: { currentPath?: string };
-  updateState: (state: Record<string, unknown>) => void;
-}> = ({ paneId, state, updateState }) => {
+export const FileExplorerPane: React.FC<ToolProps> = ({ frameId, context, setContext }) => {
   const workspace = useWorkspace();
-  const { settings, setActivePaneId, updateSettings } = workspace;
+  const { settings, updateSettings, frames, openFile, selectedFrameId } = workspace;
 
-  const [path, setPath] = useState(state.currentPath ?? "");
+  const [path, setPath] = useState(context.currentPath ?? "");
   const [parent, setParent] = useState<string | null>(null);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [drives, setDrives] = useState<DriveInfo[]>([]);
@@ -65,9 +62,17 @@ export const FileExplorerPane: React.FC<{
   const [draftName, setDraftName] = useState("");
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<{ entry: FileEntry; cut: boolean } | null>(null);
+  const [submenuOpen, setSubmenuOpen] = useState(false);
 
   const pathRef = useRef(path);
   pathRef.current = path;
+
+  /** Frames a file can be sent to. This one is excluded - an explorer
+   *  cannot usefully display a file, and "Open" already covers in-place. */
+  const otherFrames = useMemo(
+    () => frames.filter((f) => f.id !== frameId),
+    [frames, frameId],
+  );
 
   useEffect(() => {
     fs.drives().then(setDrives).catch(() => setDrives([]));
@@ -93,15 +98,15 @@ export const FileExplorerPane: React.FC<{
   // Initial location: remembered path, else the user's home.
   useEffect(() => {
     (async () => {
-      const start = state.currentPath || (await fs.homeDir().catch(() => ""));
+      const start = context.currentPath || (await fs.homeDir().catch(() => ""));
       if (start) await load(start);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (path) updateState({ currentPath: path });
-  }, [path, updateState]);
+    if (path) setContext({ currentPath: path });
+  }, [path, setContext]);
 
   useEffect(() => {
     const unsubscribe = workspace.subscribeEvent("refresh-explorer", () => {
@@ -130,15 +135,21 @@ export const FileExplorerPane: React.FC<{
     });
   }, [entries, filter, settings.showHidden]);
 
+  /**
+   * Open an entry. Directories navigate in place; files go wherever the
+   * workspace decides - the selected frame if there is one, otherwise the
+   * configured default. `sourceFrameId` is this frame, used only as the
+   * fallback when nothing is selected.
+   */
   const openEntry = useCallback(
-    (entry: FileEntry) => {
-      if (entry.isDirectory) {
+    (entry: FileEntry, target?: { frameId?: string; newFrame?: boolean }) => {
+      if (entry.isDirectory && !target) {
         void load(entry.path);
-      } else {
-        workspace.emitEvent("open-file", { path: entry.path, sourcePaneId: paneId });
+        return;
       }
+      openFile(entry.path, { ...target, sourceFrameId: frameId });
     },
-    [load, workspace, paneId],
+    [load, openFile, frameId],
   );
 
   const doDelete = useCallback(
@@ -208,7 +219,7 @@ export const FileExplorerPane: React.FC<{
     const parts = path.split(/[\\/]/).filter(Boolean);
     const crumbs: { label: string; target: string }[] = [];
     let acc = "";
-    parts.forEach((part, index) => {
+    parts.forEach((part: string, index: number) => {
       acc = index === 0 ? `${part}\\` : paths.join(acc, part);
       crumbs.push({ label: part, target: acc });
     });
@@ -217,8 +228,7 @@ export const FileExplorerPane: React.FC<{
 
   return (
     <div
-      onMouseDown={() => setActivePaneId(paneId)}
-      className="h-full flex flex-col overflow-hidden"
+            className="h-full flex flex-col overflow-hidden"
       style={{ backgroundColor: "var(--dss-bg-panel)" }}
     >
       {/* Toolbar */}
@@ -364,6 +374,7 @@ export const FileExplorerPane: React.FC<{
                 e.preventDefault();
                 e.stopPropagation();
                 setSelected(entry.path);
+                setSubmenuOpen(false);
                 setMenu({ x: e.clientX, y: e.clientY, entry });
               }}
               className="flex items-center gap-1.5 px-2 py-[3px] cursor-pointer text-[12px]"
@@ -471,9 +482,26 @@ export const FileExplorerPane: React.FC<{
         >
           {[
             {
-              label: menu.entry.isDirectory ? "Open" : "Open in editor",
+              label: menu.entry.isDirectory
+                ? "Open"
+                : selectedFrameId
+                  ? `Open in ${selectedFrameId}`
+                  : "Open",
               run: () => openEntry(menu.entry),
             },
+            ...(menu.entry.isDirectory
+              ? []
+              : [
+                  {
+                    label: "Open in frame",
+                    submenu: true as const,
+                    run: () => setSubmenuOpen((v) => !v),
+                  },
+                  {
+                    label: "Open in new frame",
+                    run: () => openEntry(menu.entry, { newFrame: true }),
+                  },
+                ]),
             {
               label: "Open with system app",
               run: () => fs.openExternal(menu.entry.path).catch((e) => setError(errorText(e))),
@@ -504,26 +532,70 @@ export const FileExplorerPane: React.FC<{
             },
             { label: "Delete", run: () => void doDelete(menu.entry), danger: true },
           ].map((item) => (
-            <button
-              key={item.label}
-              className="w-full text-left px-2.5 py-1.5 text-[11px]"
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: item.danger ? "var(--dss-destructive)" : "var(--dss-text)",
-              }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--dss-bg-input)")
-              }
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              onClick={() => {
-                item.run();
-                setMenu(null);
-              }}
-            >
-              {item.label}
-            </button>
+            <React.Fragment key={item.label}>
+              <button
+                className="w-full text-left px-2.5 py-1.5 text-[11px] flex items-center justify-between gap-2"
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: item.danger ? "var(--dss-destructive)" : "var(--dss-text)",
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.backgroundColor = "var(--dss-bg-input)")
+                }
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                onClick={() => {
+                  item.run();
+                  // The submenu toggle keeps the menu open; everything else closes it.
+                  if (!item.submenu) setMenu(null);
+                }}
+              >
+                <span>{item.label}</span>
+                {item.submenu && <ChevronRight size={10} />}
+              </button>
+
+              {item.submenu && submenuOpen && (
+                <div style={{ backgroundColor: "var(--dss-bg-input)" }}>
+                  {otherFrames.length === 0 && (
+                    <div
+                      className="px-4 py-1.5 text-[10px]"
+                      style={{ color: "var(--dss-text-faint)" }}
+                    >
+                      no other frames
+                    </div>
+                  )}
+                  {otherFrames.map((f) => (
+                    <button
+                      key={f.id}
+                      className="w-full text-left px-4 py-1.5 text-[11px] flex items-center justify-between gap-2"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "var(--dss-text)",
+                      }}
+                      onMouseEnter={(e) =>
+                        (e.currentTarget.style.backgroundColor = "var(--dss-bg-surface)")
+                      }
+                      onMouseLeave={(e) =>
+                        (e.currentTarget.style.backgroundColor = "transparent")
+                      }
+                      onClick={() => {
+                        openEntry(menu.entry, { frameId: f.id });
+                        setMenu(null);
+                        setSubmenuOpen(false);
+                      }}
+                    >
+                      <span>{f.id}</span>
+                      <span className="dss-label" style={{ fontSize: 8 }}>
+                        {f.tool}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
           ))}
         </div>
       )}

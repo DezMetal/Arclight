@@ -4,6 +4,7 @@ import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-code
 import { languages } from "@codemirror/language-data";
 
 import { useWorkspace } from "../context/WorkspaceContext";
+import type { ToolProps } from "../types";
 import { fs, paths, errorText } from "../lib/api";
 import { useCodeMirrorTheme } from "../lib/editorTheme";
 
@@ -14,15 +15,10 @@ import { useCodeMirrorTheme } from "../lib/editorTheme";
  * multi-cursor, no folding, and hand-written bracket/indent handling that
  * CodeMirror does properly.
  */
-export const CodeEditorPane: React.FC<{
-  paneId: string;
-  state: { filePath?: string };
-  updateState: (state: Record<string, unknown>) => void;
-}> = ({ paneId, state, updateState }) => {
-  const workspace = useWorkspace();
-  const { settings, setActivePaneId, setLastActiveEditorId } = workspace;
+export const CodeEditorPane: React.FC<ToolProps> = ({ context, setContext }) => {
+  const { settings } = useWorkspace();
 
-  const [filePath, setFilePath] = useState(state.filePath ?? "");
+  const [filePath, setFilePath] = useState(context.filePath ?? "");
   const [content, setContent] = useState("");
   const [saved, setSaved] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -33,14 +29,28 @@ export const CodeEditorPane: React.FC<{
   const theme = useCodeMirrorTheme();
   const dirty = content !== saved;
 
+  /**
+   * The path whose contents are actually in the buffer.
+   *
+   * Kept separate from `filePath`, which is only what the header shows.
+   * Deriving "do we need to load?" from the displayed path meant a freshly
+   * mounted frame already agreed with its context and skipped the read, so
+   * every file opened blank.
+   */
+  const loadedRef = useRef<string | null>(null);
+
   const open = useCallback(async (target: string) => {
     setError(null);
+    loadedRef.current = target;
     try {
       const file = await fs.read(target);
       setFilePath(file.path);
       setContent(file.content);
       setSaved(file.content);
       setStatus("idle");
+      // The backend returns a normalised path; treat that as loaded too so a
+      // round trip through the context does not trigger a second read.
+      loadedRef.current = file.path;
     } catch (err) {
       setError(errorText(err));
       setContent("");
@@ -48,14 +58,18 @@ export const CodeEditorPane: React.FC<{
     }
   }, []);
 
+  // The workspace writes the requested file into this frame's editor context.
+  // This covers a fresh mount, a frame switched to the editor by an open, and
+  // a frame already showing the editor that had a new file routed to it.
   useEffect(() => {
-    if (state.filePath) void open(state.filePath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const wanted = context.filePath;
+    if (!wanted || loadedRef.current === wanted) return;
+    void open(wanted);
+  }, [context.filePath, open]);
 
   useEffect(() => {
-    if (filePath) updateState({ filePath });
-  }, [filePath, updateState]);
+    if (filePath) setContext({ filePath });
+  }, [filePath, setContext]);
 
   // Load the language mode that matches the extension.
   useEffect(() => {
@@ -108,22 +122,6 @@ export const CodeEditorPane: React.FC<{
     return () => window.clearTimeout(timer);
   }, [content, dirty, filePath, settings.autosave, save]);
 
-  // Open requests from the explorer and from `dnet open`.
-  useEffect(() => {
-    const unsubscribe = workspace.subscribeEvent(
-      "open-file",
-      (payload: { path?: string; sourcePaneId?: string }) => {
-        if (!payload?.path) return;
-        const isTarget =
-          workspace.activePaneId === paneId ||
-          workspace.lastActiveEditorId === paneId ||
-          !workspace.activePaneId;
-        if (isTarget) void open(payload.path);
-      },
-    );
-    return unsubscribe;
-  }, [workspace, paneId, open]);
-
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -152,10 +150,6 @@ export const CodeEditorPane: React.FC<{
 
   return (
     <div
-      onMouseDown={() => {
-        setActivePaneId(paneId);
-        setLastActiveEditorId(paneId);
-      }}
       onKeyDown={onKeyDown}
       className="h-full flex flex-col overflow-hidden"
       style={{ backgroundColor: "var(--dss-bg-panel)" }}

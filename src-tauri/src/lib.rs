@@ -1,13 +1,18 @@
+mod control;
 mod fs_api;
 mod pty;
 mod sysinfo;
 
+use std::sync::Arc;
+
+use control::ControlState;
 use pty::PtyRegistry;
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(PtyRegistry::default())
+        .manage(Arc::new(ControlState::default()))
         .invoke_handler(tauri::generate_handler![
             fs_api::fs_list,
             fs_api::fs_read,
@@ -28,6 +33,13 @@ pub fn run() {
             pty::pty_list,
             pty::pty_available_shells,
             sysinfo::system_info,
+            control::control_status,
+            control::control_start,
+            control::control_stop,
+            control::control_publish,
+            control::control_respond,
+            control::control_event,
+            control::control_rotate_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arclight");
