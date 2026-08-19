@@ -30,7 +30,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,8 +40,19 @@
       "icons/icon.ico"
     ],
     "publisher": "D-Net Lab",
-    "copyright": "D-Net Lab",
-    "shortDescription": "Arclight workspace",
-    "longDescription": "Arclight — a tiled explorer, editor and terminal workspace from D-Net Lab."
+    "copyright": "Copyright (c) 2026 D-Net Lab",
+    "shortDescription": "Explorer, editor and terminal in one window",
+    "longDescription": "Arclight is a tiled workspace that replaces your file explorer, editor and terminal with a single lightweight program. Real ConPTY terminals, a CodeMirror editor, and an optional local control API for driving the workspace programmatically. From D-Net Lab.",
+    "category": "DeveloperTool",
+    "homepage": "https://github.com/DezMetal/Arclight",
+    "licenseFile": "../LICENSE",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "D-Net Lab"
+      }
+    }
   }
 }

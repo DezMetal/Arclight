@@ -372,3 +372,84 @@ select.dss-input {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   Preset amplification
+
+   Canonical DSS presets shift accent, rules and glow, but deliberately leave
+   backgrounds alone — a website keeps its page colour and changes its accent.
+   In a workspace that made the presets nearly indistinguishable, because
+   almost every pixel is chrome.
+
+   These rules extend each preset into the surfaces Arclight actually shows.
+   They live here, not upstream, so the shared stylesheet keeps behaving the
+   way every other D-Net Lab property expects.
+   ========================================================================== */
+
+/* Aero — glassier and cooler. Leans into the translucency DSS defines. */
+:root[data-dss-preset="aero"] {
+  --dss-bg: #071016;
+  --dss-surface-solid: #10202b;
+  --dss-surface-tint: rgba(140, 230, 255, 0.16);
+}
+
+:root[data-dss-preset="aero"][data-theme="light"] {
+  --dss-bg: #e8f6fb;
+  --dss-surface-solid: #f7fdff;
+}
+
+/* Softclub — warmer, lower contrast, rounded rather than sharp. */
+:root[data-dss-preset="softclub"] {
+  --dss-bg: #140f1c;
+  --dss-surface-solid: #201a2c;
+  --dss-cut: 4px;
+  --dss-cut-sm: 3px;
+  --dss-radius: 10px;
+}
+
+:root[data-dss-preset="softclub"][data-theme="light"] {
+  --dss-bg: #f4eef8;
+  --dss-surface-solid: #fdfaff;
+}
+
+/* E-Ink — flat and matte. No glow, no chamfer, hairline rules. */
+:root[data-dss-preset="eink"] {
+  --dss-bg: #101010;
+  --dss-surface-solid: #1a1a1a;
+  --dss-cut: 0px;
+  --dss-cut-sm: 0px;
+  --dss-radius: 0px;
+  --dss-glow-blur: 0px;
+  --dss-glow-spread: 0px;
+}
+
+:root[data-dss-preset="eink"][data-theme="light"] {
+  --dss-bg: #f2f1ec;
+  --dss-surface-solid: #fbfaf6;
+}
+
+/* The glow is the focus indicator, so E-Ink swaps it for a hard border
+   rather than removing the only cue that says which frame is focused. */
+:root[data-dss-preset="eink"] .dss-glow {
+  box-shadow: 0 0 0 2px var(--dss-accent);
+}
+
+/* Terminal — high contrast phosphor on near-black. */
+:root[data-dss-preset="terminal"] {
+  --dss-bg: #000000;
+  --dss-surface-solid: #050805;
+  --dss-cut: 0px;
+  --dss-cut-sm: 0px;
+  --dss-radius: 0px;
+}
+
+:root[data-dss-preset="terminal"][data-theme="light"] {
+  --dss-bg: #ffffff;
+  --dss-surface-solid: #ffffff;
+}
+
+/* Terminal is monospace throughout, which is the whole point of it. */
+:root[data-dss-preset="terminal"] body,
+:root[data-dss-preset="terminal"] .dss-input {
+  font-family: var(--dss-font-mono);
+}

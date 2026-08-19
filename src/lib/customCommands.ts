@@ -15,7 +15,8 @@
  * `print` writes to the terminal; use \n freely, it is converted to \r\n.
  */
 
-import { THEMES, PRESETS, type ThemeName, type PresetName } from "../context/WorkspaceContext";
+import { PRESETS, THEMES, type PresetName, type ThemeName } from "./themes";
+// Type-only: erased at runtime, so it cannot create a module cycle.
 import type { useWorkspace } from "../context/WorkspaceContext";
 import { fs, paths, pty, systemInfo, errorText } from "./api";
 

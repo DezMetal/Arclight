@@ -131,8 +131,33 @@ terminal and back returns the explorer to the directory it was showing. A tool
 opened in a frame for the first time inherits that frame's current location
 rather than starting at your home directory.
 
-Layout and settings persist to `localStorage` under `arclight_layout` and
-`arclight_settings`.
+### Where your workspace is kept
+
+Layout, every frame's remembered directories, and settings are written to:
+
+```
+%APPDATA%\dev.dnetlab.arclight\workspace.json
+```
+
+Reopening restores exactly what you left: the same frames, the same tools, the
+same paths. Writes are atomic — a temp file and a rename — so a crash mid-write
+cannot leave a truncated workspace. A file that somehow becomes unreadable is
+set aside as `workspace.json.corrupt` and Arclight starts from defaults rather
+than refusing to open.
+
+This used to live in the webview's `localStorage`, which is scoped to the page
+origin and differs between the dev server and the packaged app. That is why the
+workspace kept coming back empty.
+
+## Closing and the tray
+
+**The close button hides Arclight to the system tray.** Shells keep running,
+frames stay as they were, and reopening is instant — which is the behaviour you
+want from something you leave open all day.
+
+- Click the tray icon to bring the window back.
+- Right-click it for **Open Arclight** and **Quit**.
+- **Quit** is the only thing that actually stops it.
 
 ## The terminal
 
@@ -278,6 +303,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/frames
 
 `/v1/command` runs the same `dnet` implementations the terminal exposes, so
 scripted and typed control share one code path rather than drifting apart.
+
+**Full documentation with worked examples: [docs/CONTROL_API.md](docs/CONTROL_API.md)**
 
 ### Reading and writing frame contents
 

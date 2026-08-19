@@ -16,30 +16,13 @@ import {
   SplitDirection,
   ToolDefinition,
 } from "../types";
+import { PRESETS, THEMES, type PresetName, type ThemeName } from "../lib/themes";
+import { STATE_VERSION, store } from "../lib/store";
 
-/**
- * Themes and presets are canonical DSS, not an Arclight invention.
- *
- * DSS drives everything from two attributes on <html>: `data-theme` picks dark
- * or light, `data-dss-preset` picks a look. Every combination themes the whole
- * app - including the terminal palette and the editor's syntax colours -
- * because they all read the same tokens.
- */
-export type ThemeName = "dark" | "light";
-export type PresetName = "signal" | "aero" | "softclub" | "eink" | "terminal";
-
-export const THEMES: { id: ThemeName; label: string; description: string }[] = [
-  { id: "dark", label: "Dark", description: "The house default" },
-  { id: "light", label: "Light", description: "Icy, never grey" },
-];
-
-export const PRESETS: { id: PresetName; label: string; description: string }[] = [
-  { id: "signal", label: "Signal Glass", description: "Misty translucent glass, cyan glow" },
-  { id: "aero", label: "Aero", description: "Brighter, glassier, higher gloss" },
-  { id: "softclub", label: "Softclub", description: "Softer edges, warmer diffusion" },
-  { id: "eink", label: "E-Ink", description: "Flat and matte, minimal glow" },
-  { id: "terminal", label: "Terminal", description: "High contrast, phosphor" },
-];
+// Re-exported so existing imports keep working; the definitions live in
+// lib/themes.ts, which imports nothing and therefore cannot form a cycle.
+export { PRESETS, THEMES };
+export type { PresetName, ThemeName };
 
 /** What happens when a file is opened and no frame is selected. */
 export type DefaultOpenBehaviour = "current" | "new";
@@ -110,6 +93,11 @@ interface WorkspaceContextProps {
   subscribeEvent: (name: string, handler: (payload: any) => void) => () => void;
 
   resetLayout: () => void;
+  /** False until the user dismisses the first-run welcome. */
+  seenWelcome: boolean;
+  dismissWelcome: () => void;
+  /** Where the workspace file lives, shown in settings. */
+  statePath: string;
   settings: WorkspaceSettings;
   updateSettings: (patch: Partial<WorkspaceSettings>) => void;
 }
@@ -311,26 +299,46 @@ function mapFrame(
 // --- provider --------------------------------------------------------------
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [settings, setSettings] = useState<WorkspaceSettings>(() => {
-    try {
-      const saved = localStorage.getItem(SETTINGS_KEY);
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
-  });
+  // State is loaded asynchronously from the config file, so the first render
+  // uses defaults and `hydrated` gates saving. Without that gate the defaults
+  // would be written back over the saved workspace before it arrived.
+  const [settings, setSettings] = useState<WorkspaceSettings>(DEFAULT_SETTINGS);
+  const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(DEFAULT_LAYOUT);
+  const [hydrated, setHydrated] = useState(false);
+  const [seenWelcome, setSeenWelcome] = useState(true);
+  const [statePath, setStatePath] = useState<string>("");
 
-  const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(() => {
-    try {
-      const savedSettings = localStorage.getItem(SETTINGS_KEY);
-      const remember = savedSettings ? JSON.parse(savedSettings).rememberState !== false : true;
-      if (!remember) return DEFAULT_LAYOUT;
-      const saved = localStorage.getItem(LAYOUT_KEY);
-      return saved ? migrateLayout(JSON.parse(saved)) : DEFAULT_LAYOUT;
-    } catch {
-      return DEFAULT_LAYOUT;
-    }
-  });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [saved, where] = await Promise.all([
+        store.load(),
+        store.location().catch(() => ({ path: "", exists: false })),
+      ]);
+      if (cancelled) return;
+
+      if (saved) {
+        if (saved.settings) {
+          setSettings({ ...DEFAULT_SETTINGS, ...(saved.settings as object) });
+        }
+        const remember =
+          (saved.settings as WorkspaceSettings | undefined)?.rememberState !== false;
+        if (remember && saved.layout) {
+          setLayoutTree(migrateLayout(saved.layout as LayoutNode));
+        }
+        setSeenWelcome(saved.seenWelcome === true);
+      } else {
+        // Nothing saved: first run.
+        setSeenWelcome(false);
+      }
+
+      setStatePath(where.path);
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [focusedFrameId, setFocusedFrameId] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
@@ -339,22 +347,28 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const listeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
 
   // Persist ---------------------------------------------------------------
+  //
+  // One file, written whenever anything changes, but never before the saved
+  // state has been read back.
   useEffect(() => {
-    if (settings.rememberState && layoutTree) {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutTree));
-    } else if (!settings.rememberState) {
-      localStorage.removeItem(LAYOUT_KEY);
-    }
-  }, [layoutTree, settings.rememberState]);
+    if (!hydrated) return;
+    void store
+      .save({
+        version: STATE_VERSION,
+        layout: settings.rememberState ? layoutTree : null,
+        settings,
+        seenWelcome,
+      })
+      .catch((err) => console.warn("could not save workspace:", err));
+  }, [hydrated, layoutTree, settings, seenWelcome]);
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     // DSS reads these two attributes off <html>. Setting them here is the
     // entire theming mechanism - no class juggling, no per-component work.
     const root = document.documentElement;
     root.setAttribute("data-theme", settings.theme || "dark");
     root.setAttribute("data-dss-preset", settings.preset || "signal");
-  }, [settings]);
+  }, [settings.theme, settings.preset]);
 
   // Drop focus/selection when the frame disappears.
   useEffect(() => {
@@ -655,6 +669,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [resolveOpenTarget, splitFrame, layoutTree, selectedFrameId, focusedFrameId, settings.defaultSplit],
   );
 
+  const dismissWelcome = useCallback(() => setSeenWelcome(true), []);
+
   const resetLayout = useCallback(() => {
     setLayoutTree(DEFAULT_LAYOUT);
     setSelectedFrameId(null);
@@ -689,6 +705,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         emitEvent,
         subscribeEvent,
         resetLayout,
+        seenWelcome,
+        dismissWelcome,
+        statePath,
         settings,
         updateSettings,
       }}

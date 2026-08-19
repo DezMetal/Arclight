@@ -6,6 +6,7 @@ import { CodeEditorPane } from "./components/CodeEditorPane";
 import { SettingsPane } from "./components/SettingsPane";
 import { TerminalPane } from "./components/TerminalPane";
 import { ControlBridge } from "./components/ControlBridge";
+import { Welcome } from "./components/Welcome";
 
 function WorkspaceShell() {
   const { registerTool } = useWorkspace();
@@ -47,6 +48,7 @@ function WorkspaceShell() {
       style={{ backgroundColor: "var(--dss-bg-app)", color: "var(--dss-text)" }}
     >
       <ControlBridge />
+      <Welcome />
       <main className="flex-1 min-h-0 relative">
         <LayoutManager />
       </main>

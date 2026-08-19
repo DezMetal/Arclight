@@ -1,7 +1,9 @@
 mod control;
 mod fs_api;
 mod pty;
+mod store;
 mod sysinfo;
+mod tray;
 
 use std::sync::Arc;
 
@@ -33,6 +35,9 @@ pub fn run() {
             pty::pty_list,
             pty::pty_available_shells,
             sysinfo::system_info,
+            store::state_load,
+            store::state_save,
+            store::state_location,
             control::control_status,
             control::control_start,
             control::control_stop,
@@ -41,6 +46,11 @@ pub fn run() {
             control::control_event,
             control::control_rotate_token,
         ])
+        .setup(|app| {
+            tray::build(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(tray::on_window_event)
         .run(tauri::generate_context!())
         .expect("error while running Arclight");
 }

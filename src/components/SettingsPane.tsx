@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useWorkspace, THEMES, PRESETS } from "../context/WorkspaceContext";
+import { useWorkspace } from "../context/WorkspaceContext";
+import { PRESETS, THEMES } from "../lib/themes";
 import type { ToolProps } from "../types";
 import { systemInfo, errorText, type SystemInfo } from "../lib/api";
 import { control, type ControlStatus } from "../lib/control";

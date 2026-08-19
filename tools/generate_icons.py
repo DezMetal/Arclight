@@ -19,9 +19,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 # --- DSS palette -----------------------------------------------------------
-BACKDROP = (13, 17, 23, 255)          # --dss-color-background-primary
-ACCENT = (159, 191, 254, 255)         # live accent, dss.css:490
-ACCENT_HOT = (0, 224, 255, 255)       # --dss-accent-glow-base, used for the core
+BACKDROP = (10, 12, 16, 255)          # --dss-bg
+ACCENT = (127, 233, 255, 255)         # --dss-accent-ink, bright enough for a taskbar
+ACCENT_HOT = (190, 250, 255, 255)     # near-white core so the arc survives downsampling
 BORDER = (139, 148, 158, 110)         # --dss-color-border-primary
 
 # Supersample factor. The mark is drawn this many times larger than the
@@ -103,9 +103,9 @@ def build_mark() -> Image.Image:
         img,
         arc,
         [
-            (int(18 * SS), 55, int(11 * SS)),
-            (int(11 * SS), 95, int(5 * SS)),
-            (int(6 * SS), 255, 0),
+            (int(20 * SS), 80, int(11 * SS)),
+            (int(13 * SS), 140, int(5 * SS)),
+            (int(8 * SS), 255, 0),
         ],
     )
 
@@ -113,7 +113,7 @@ def build_mark() -> Image.Image:
     def arc_core(d: ImageDraw.ImageDraw, width: int, alpha: int) -> None:
         d.arc(box, start=start, end=end, fill=ACCENT_HOT[:3] + (alpha,), width=width)
 
-    draw_glow(img, arc_core, [(int(2.4 * SS), 230, 0)])
+    draw_glow(img, arc_core, [(int(3.4 * SS), 255, 0)])
 
     # --- electrode terminals ----------------------------------------------
     # Two dots capping the arc, where the discharge strikes. Angles follow
@@ -123,7 +123,7 @@ def build_mark() -> Image.Image:
         rad = math.radians(deg)
         px = cx + radius * math.cos(rad)
         py = cy + radius * math.sin(rad)
-        r = 6.5 * SS
+        r = 7.5 * SS
 
         def terminal(d: ImageDraw.ImageDraw, width: int, alpha: int, _p=(px, py), _r=r) -> None:
             d.ellipse(
