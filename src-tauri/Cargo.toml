@@ -1,6 +1,6 @@
 [package]
 name = "arclight"
-version = "0.1.2"
+version = "0.1.3"
 description = "Arclight — the D-Net Lab workspace"
 authors = ["D-Net Lab"]
 edition = "2021"
