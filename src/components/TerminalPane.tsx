@@ -65,6 +65,7 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
     if (!container) return;
 
     let disposed = false;
+    let started = false;
     let attachment: number | undefined;
 
     const term = new Terminal({
@@ -86,50 +87,70 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
     termRef.current = term;
     fitRef.current = fit;
 
-    try {
-      fit.fit();
-    } catch {
-      /* not laid out yet; sizes are clamped below */
-    }
-
     const decoder = new TextDecoder("utf-8", { fatal: false });
 
-    // A frame created by a split has not been laid out when this runs, so
-    // fit() reports 0 columns. Handing ConPTY a zero-size window leaves the
-    // shell running but never drawing.
-    const cols = Math.max(term.cols || 0, 20);
-    const rows = Math.max(term.rows || 0, 5);
+    /**
+     * Spawn only once the frame has a real size.
+     *
+     * A frame created by a split -- or restored into a layout that has not
+     * been measured yet -- has no dimensions when this effect runs, so fit()
+     * reports zero columns. Clamping to a made-up 20x5 and spawning anyway
+     * left ConPTY with a window that never matched the terminal: the shell
+     * ran, drew nothing, and stayed that way. Resizing afterwards does not
+     * recover it, which is why a new terminal only worked if you restarted
+     * the shell by hand -- by then the frame had been laid out, so the second
+     * spawn got honest numbers.
+     *
+     * So wait for the layout instead of guessing at it. ConPTY is told the
+     * truth the first time and there is nothing to recover from.
+     */
+    const startSession = () => {
+      if (disposed || started) return;
 
-    const startCwd = cwdRef.current || context.terminalCwd || undefined;
+      try {
+        fit.fit();
+      } catch {
+        /* measured below; a bad fit must not stop the spawn */
+      }
+      const cols = term.cols || 0;
+      const rows = term.rows || 0;
+      if (cols < 2 || rows < 2) return; // not laid out yet -- try again later
 
-    pty
-      .spawn({ id: sessionId, cwd: startCwd, cols, rows, shell }, (bytes) => {
-        if (!disposed) term.write(decoder.decode(bytes, { stream: true }));
-      })
-      .then((info) => {
-        attachment = info.attachment;
-        // Unmounted while the spawn was in flight: release immediately, or the
-        // session keeps a sink pointing at a disposed terminal.
-        if (disposed) {
-          void pty.detach(sessionId, attachment);
-          return;
-        }
-        setAlive(true);
-        setCwd(info.cwd);
-        requestAnimationFrame(() => {
-          if (disposed) return;
-          try {
-            fit.fit();
-          } catch {
-            /* still not laid out */
+      started = true;
+      const startCwd = cwdRef.current || context.terminalCwd || undefined;
+
+      pty
+        .spawn({ id: sessionId, cwd: startCwd, cols, rows, shell }, (bytes) => {
+          if (!disposed) term.write(decoder.decode(bytes, { stream: true }));
+        })
+        .then((info) => {
+          attachment = info.attachment;
+          // Unmounted while the spawn was in flight: release immediately, or
+          // the session keeps a sink pointing at a disposed terminal.
+          if (disposed) {
+            void pty.detach(sessionId, attachment);
+            return;
           }
+          setAlive(true);
+          setCwd(info.cwd);
+        })
+        .catch((err) => {
+          if (disposed) return;
+          term.write(CR + LF + sgr(RED, errorText(err)) + CR + LF);
+          setAlive(false);
         });
-      })
-      .catch((err) => {
-        if (disposed) return;
-        term.write(CR + LF + sgr(RED, errorText(err)) + CR + LF);
-        setAlive(false);
-      });
+    };
+
+    // Usually laid out already; when it is, this spawns synchronously and the
+    // observer below never has to.
+    startSession();
+
+    // A frame that was not measured yet gets its size on the next layout pass.
+    const sizeWatcher = new ResizeObserver(() => startSession());
+    sizeWatcher.observe(container);
+    // Belt and braces: a container that is laid out without ever resizing
+    // would not notify the observer.
+    const firstFrame = requestAnimationFrame(startSession);
 
     // --- input -------------------------------------------------------------
     //
@@ -196,6 +217,8 @@ export const TerminalPane: React.FC<ToolProps> = ({ frameId, context, setContext
       resizeSub.dispose();
       // Detach, do not kill. The shell keeps running and keeps buffering;
       // remounting replays what it missed.
+      sizeWatcher.disconnect();
+      cancelAnimationFrame(firstFrame);
       void pty.detach(sessionId, attachment);
       term.dispose();
       termRef.current = null;
