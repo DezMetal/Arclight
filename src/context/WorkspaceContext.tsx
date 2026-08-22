@@ -307,6 +307,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [hydrated, setHydrated] = useState(false);
   const [seenWelcome, setSeenWelcome] = useState(true);
   const [statePath, setStatePath] = useState<string>("");
+  const [focusedFrameId, setFocusedFrameId] = useState<string | null>(null);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -325,6 +327,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           (saved.settings as WorkspaceSettings | undefined)?.rememberState !== false;
         if (remember && saved.layout) {
           setLayoutTree(migrateLayout(saved.layout as LayoutNode));
+          if (saved.focusedFrameId) setFocusedFrameId(saved.focusedFrameId);
+          if (saved.selectedFrameId) setSelectedFrameId(saved.selectedFrameId);
         }
         setSeenWelcome(saved.seenWelcome === true);
       } else {
@@ -340,8 +344,6 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, []);
 
-  const [focusedFrameId, setFocusedFrameId] = useState<string | null>(null);
-  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [tools, setTools] = useState<Record<string, ToolDefinition>>({});
 
   const listeners = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
@@ -358,9 +360,21 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         layout: settings.rememberState ? layoutTree : null,
         settings,
         seenWelcome,
+        // Coming back to the pane you were working in is part of "where I left
+        // off". Restoring the layout but dropping focus still costs a click
+        // every launch.
+        focusedFrameId: settings.rememberState ? focusedFrameId : null,
+        selectedFrameId: settings.rememberState ? selectedFrameId : null,
       })
       .catch((err) => console.warn("could not save workspace:", err));
-  }, [hydrated, layoutTree, settings, seenWelcome]);
+  }, [
+    hydrated,
+    layoutTree,
+    settings,
+    seenWelcome,
+    focusedFrameId,
+    selectedFrameId,
+  ]);
 
   useEffect(() => {
     // DSS reads these two attributes off <html>. Setting them here is the
@@ -712,7 +726,25 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateSettings,
       }}
     >
-      {children}
+      {/*
+        Nothing renders until the saved workspace has been read back.
+
+        This is not a nicety. DEFAULT_LAYOUT uses the same frame ids as a saved
+        layout -- frame_explorer, frame_editor, frame_terminal -- so when
+        hydration swapped the tree React saw matching keys and REUSED the
+        mounted panes instead of remounting them. Each pane had already run its
+        mount-only effect against an empty context: the explorer loaded the
+        home directory, the terminal spawned a shell in the app's own working
+        directory. Those effects have [] dependencies, so the restored paths
+        arrived afterwards and were never applied. The layout came back
+        perfectly while every location inside it was wrong, and you had to
+        navigate back to your work every single launch. The editor escaped only
+        because its load effect happens to depend on context.filePath.
+
+        Mounting once, with real contexts, is the fix. The read is a local file,
+        so the wait is imperceptible.
+      */}
+      {hydrated ? children : null}
     </WorkspaceContext.Provider>
   );
 };

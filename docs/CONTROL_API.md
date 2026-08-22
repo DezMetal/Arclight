@@ -31,6 +31,19 @@ curl -s $ARC/v1/health
 { "ok": true, "app": "arclight", "version": "0.1.2", "running": true }
 ```
 
+The API also documents itself, so an agent holding the address and the token
+needs nothing else:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" $ARC/v1/guide
+```
+
+That returns a condensed usage guide written for agents -- frames and tools,
+why the editor buffer beats reading the file from disk, and the two errors
+worth knowing about. It ships inside the binary, so it can never go stale
+against the build you are actually talking to. This page stays the long form,
+for people.
+
 Every other call carries the token:
 
 ```bash

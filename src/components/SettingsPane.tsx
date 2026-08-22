@@ -16,45 +16,49 @@ export const SettingsPane: React.FC<ToolProps> = () => {
     control.status().then(setApiStatus).catch(() => setApiStatus(null));
   }, []);
 
-  // Start or stop the server to match the settings. Keeping this in one effect
-  // means the running server and the saved preference can never disagree.
+  // REPORT the server's state; do not own it.
+  //
+  // Starting and stopping moved to ControlBridge, which is mounted for the
+  // life of the app. Doing it here meant the server only ever started while
+  // somebody had this panel open, so `apiEnabled: true` could persist across a
+  // restart with nothing actually listening. Running it in both places instead
+  // would just have the two effects restarting the server underneath each
+  // other.
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      setApiError(null);
+    const read = async () => {
       try {
-        if (settings.apiEnabled) {
-          const status = await control.start({
-            enabled: true,
-            port: settings.apiPort,
-            token: settings.apiToken,
-            allowRemote: settings.apiAllowRemote,
-          });
-          if (cancelled) return;
+        const status = await control.status();
+        if (!cancelled) {
           setApiStatus(status);
-          // Persist the generated token so it survives a restart.
-          if (status.token && status.token !== settings.apiToken) {
-            updateSettings({ apiToken: status.token });
-          }
-        } else {
-          const status = await control.stop();
-          if (!cancelled) setApiStatus(status);
+          // Asked to be on, but nothing bound: say so here rather than
+          // leaving the toggle looking satisfied.
+          setApiError(
+            settings.apiEnabled && !status.running
+              ? "Enabled, but the server is not listening. The port may be in use."
+              : null,
+          );
         }
       } catch (err) {
         if (!cancelled) setApiError(errorText(err));
       }
-    })();
+    };
+
+    void read();
+    // ControlBridge reacts to the same settings change we just saw, so look
+    // again once it has had a moment to act.
+    const timer = window.setTimeout(read, 600);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [
     settings.apiEnabled,
     settings.apiPort,
     settings.apiAllowRemote,
     settings.apiToken,
-    updateSettings,
   ]);
 
   return (

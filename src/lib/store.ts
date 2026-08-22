@@ -15,6 +15,10 @@ export interface PersistedWorkspace {
   settings: unknown;
   /** Set the first time the app runs, so the welcome shows exactly once. */
   seenWelcome?: boolean;
+  /** Which frame had focus, so you resume in the pane you left off in. */
+  focusedFrameId?: string | null;
+  /** The standing target for anything opened, if one was set. */
+  selectedFrameId?: string | null;
 }
 
 /** Bumped when the persisted shape changes in a way migration must notice. */

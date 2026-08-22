@@ -20,6 +20,49 @@ export const ControlBridge: React.FC = () => {
   const wsRef = useRef(workspace);
   wsRef.current = workspace;
 
+  // Start or stop the server to match the saved preference.
+  //
+  // This used to live in SettingsPane, which only exists while a frame is
+  // actually DISPLAYING the settings tool. So `apiEnabled: true` persisted in
+  // workspace.json while the server never came up, and the panel that would
+  // have reported it sat unmounted. Enable it, restart, and the API is
+  // silently off -- the saved preference and the running server disagreeing,
+  // which is exactly what keeping this in one effect was meant to prevent.
+  // ControlBridge is mounted for the life of the app, so the preference is
+  // honoured whether or not anyone is looking at Settings.
+  const { apiEnabled, apiPort, apiToken, apiAllowRemote } = workspace.settings;
+  const { updateSettings } = workspace;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        if (apiEnabled) {
+          const status = await control.start({
+            enabled: true,
+            port: apiPort,
+            token: apiToken,
+            allowRemote: apiAllowRemote,
+          });
+          // Persist a generated token so it survives a restart.
+          if (!cancelled && status.token && status.token !== apiToken) {
+            updateSettings({ apiToken: status.token });
+          }
+        } else {
+          await control.stop();
+        }
+      } catch {
+        // SettingsPane surfaces the failure when it is open. The app must not
+        // fall over because a port was already taken.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiEnabled, apiPort, apiToken, apiAllowRemote, updateSettings]);
+
   // Mirror workspace state whenever it changes.
   useEffect(() => {
     void control

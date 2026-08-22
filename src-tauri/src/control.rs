@@ -212,6 +212,79 @@ async fn health(State(ctx): State<ServerContext>) -> impl IntoResponse {
     }))
 }
 
+/// The usage guide, served by the thing it describes.
+///
+/// An agent holding the address and the token should not also need somebody
+/// to hand it a markdown file. Docs that live only in a repo go stale against
+/// a running binary and are invisible to the caller that actually needs them.
+/// This ships with the code and is versioned with it; `docs/CONTROL_API.md`
+/// stays the long form, for people.
+const AGENT_GUIDE: &str = r#"# Arclight Control API -- agent guide
+
+The window is a tree of FRAMES. Each frame shows one TOOL: `editor`,
+`terminal`, `file-explorer` or `settings`. Every frame has a stable id
+(`frame_editor`), and that id is what you address. `GET /v1/frames` lists them
+and says which one is focused.
+
+## Read before you write
+
+`GET /v1/frames/{id}/content` is served by the LIVE tool, so you get what the
+user is looking at. For an editor that is the BUFFER: when `dirty` is true the
+file on disk is stale, and reading it from the filesystem would give you the
+wrong text. For a terminal it is the rendered screen with escape sequences
+already applied -- add `?lines=N` for the last N lines, or `?scrollback=true`
+for the whole buffer.
+
+## Write
+
+`POST /v1/frames/{id}/content` with `{"action": ..., "payload": {...}}`.
+An unknown action returns the list of valid ones, so the surface is
+discoverable without these docs.
+
+- editor: `setContent` `insert` `replace` `find` `save` `open` `reload`
+- terminal: `command` `input` `key` `clear` `restart`
+- file-explorer: `navigate` `up` `home` `refresh` `filter` `select` `open` `create`
+
+A terminal `command` returns as soon as the line is typed; the shell runs it
+asynchronously. Read the frame back to find out what happened rather than
+assuming it finished.
+
+## Layout
+
+`POST /v1/open` `{path, frame_id?, new_frame?}`;
+`POST /v1/frames/split` `{frame_id, direction, tool}`, which returns the new
+id; `POST /v1/frames/{id}/tool` `{tool}`, and `/close`, `/select`.
+`POST /v1/command` `{command}` runs any `dnet` command and returns plain text.
+`GET /v1/events` is an SSE stream, so you can react instead of polling.
+
+## The two errors worth knowing
+
+- `frame '<id>' is not mounted` -- reads and writes go to the live tool, so a
+  frame must currently be SHOWING that tool. A frame displaying a terminal has
+  no editor buffer to read. Switch it with `POST /v1/frames/{id}/tool` first.
+- `no frame '<id>'` -- ids are stable while a frame exists and are never
+  reused. Re-read `/v1/frames`.
+
+## Etiquette
+
+This is the user's own window, not a scratch workspace. Edits appear in front
+of them and commands run in the terminal they are watching. Prefer opening a
+file to describing it, prefer their focused frame to spawning new ones, and do
+not close frames you did not create."#;
+
+async fn guide(
+    State(ctx): State<ServerContext>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize(&ctx, &headers)?;
+    Ok(Json(json!({
+        "ok": true,
+        "app": "arclight",
+        "version": env!("CARGO_PKG_VERSION"),
+        "guide": AGENT_GUIDE,
+    })))
+}
+
 async fn get_state(
     State(ctx): State<ServerContext>,
     headers: HeaderMap,
@@ -482,6 +555,7 @@ async fn events(
 fn router(ctx: ServerContext) -> Router {
     Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/guide", get(guide))
         .route("/v1/state", get(get_state))
         .route("/v1/frames", get(get_frames))
         .route("/v1/frames/split", post(split_frame))
